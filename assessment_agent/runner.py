@@ -13,7 +13,6 @@ protection. For production use, run this inside a locked-down sandbox
 
 from __future__ import annotations
 
-import re
 import shutil
 import subprocess
 import tempfile
@@ -83,14 +82,6 @@ def _normalize(text: str) -> str:
     return "\n".join(line.rstrip() for line in text.strip().splitlines())
 
 
-def _java_entrypoint(source: str) -> str:
-    """Java requires the file name to match the public class, so derive it."""
-    match = re.search(r"public\s+class\s+([A-Za-z_]\w*)", source) or re.search(
-        r"\bclass\s+([A-Za-z_]\w*)", source
-    )
-    return match.group(1) if match else "Main"
-
-
 def run_submission(
     source: str,
     language: str,
@@ -107,14 +98,10 @@ def run_submission(
     # Language-scaled limit (interpreted languages get more slack), as CP judges do.
     limit = max(0.1, time_limit_s * lang.time_multiplier)
 
-    source_filename = lang.source_filename
-    compile_cmd = lang.compile
-    run_cmd = lang.run
-    if language == "java":
-        cls = _java_entrypoint(source)
-        source_filename = f"{cls}.java"
-        compile_cmd = ["javac", source_filename]
-        run_cmd = ["java", cls]
+    if lang.resolve is not None:
+        source_filename, compile_cmd, run_cmd = lang.resolve(source)
+    else:
+        source_filename, compile_cmd, run_cmd = lang.source_filename, lang.compile, lang.run
 
     workdir = Path(tempfile.mkdtemp(prefix="assess_"))
     try:

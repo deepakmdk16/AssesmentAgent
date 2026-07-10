@@ -31,9 +31,11 @@ Rules are phrased as "do X, not Y" on purpose — specific and local beats abstr
   question goes through the `/add-question` skill; every question needs an
   independent oracle cross-check and a reference good sample (the coverage test
   enforces this).
-- Known debt: the Java entrypoint special-case in `runner.py` violates this
-  (compile command computed via a branch, not the `Language` registry). Don't
-  copy that pattern; prefer pushing per-language behavior into `Language`.
+- Source-derived per-language behavior belongs in `Language.resolve` (a callable
+  that returns `(source_filename, compile, run)` from the submission), not in a
+  branch in `run_submission`. Java uses it (the file must match the public
+  class); the runner stays language-agnostic. Follow that pattern for any future
+  language that needs source-derived naming — don't add an `if language == ...`.
 
 ## 4. Data modeling
 - Model state with **frozen dataclasses** (`Question`, `TestCase`, `Language`,

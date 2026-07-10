@@ -75,25 +75,21 @@ test that fails if a new question isn't registered. **Phase 2 loader is built**:
 ([loader.py](assessment_agent/loader.py), example `examples/sum_of_n.json`),
 with optional args-based `example_*` / advisory `required_complexity` fields.
 
-**Open items:**
-1. **Live Claude judge path is unverified** — everything is tested against the
-   *offline heuristic*; the real `client.messages.create` call (schema, effort,
-   caching, complexity fields) has never run against the API. Smoke-test it with
-   a real `ANTHROPIC_API_KEY` (`uv run assess submissions/good_solution.py` and
-   `uv run assess-eval`) before trusting the quality/complexity output.
-2. **Judge-quality evals need a real model to exercise them** — `EvalCase` now
-   carries labeled quality expectations (`expected_complexity`,
-   `expected_meets_constraints`), a `question_id`, and knapsack anchors, and
-   `assess-eval` reports complexity/meets-constraints agreement. But complexity
-   agreement is only scored with a real `ANTHROPIC_API_KEY` (offline reports
-   unknown), so it has never actually run. Do this as part of the #1 smoke-test.
-3. **Phase 2 intake + email not built** (below).
+**Live judge path — VERIFIED (2026-07-10).** The real `client.messages.create`
+path was smoke-tested with a live key on `claude-sonnet-4-6`: `assess` and
+`assess-eval` both ran clean. Structured output/params work, prompt caching is
+active, and the labeled evals matched the model on **all** anchors — verdicts
+7/7, complexity 7/7, meets-constraints 7/7. Measured cost ≈ $0.0094/candidate
+(~$9.40 per 1,000). The judge/complexity output can now be trusted (re-run the
+smoke-test when changing model/config, per the pre-push checkpoints).
 
-**Good next tasks:** run the live smoke-test (#1), which also exercises the new
-complexity labels (#2); build the Phase 2 interviewer intake + email/
-notification side; optionally surface `required_complexity` in the judge report;
-optionally add a composite score (fold quality into the final % so it can affect
-PASS/FAIL).
+**Open items:**
+1. **Phase 2 intake + email not built** (below).
+2. Optional: surface `required_complexity` in the judge report; add a composite
+   score (fold quality into the final % so it can affect PASS/FAIL).
+
+**Good next tasks:** build the Phase 2 interviewer intake + email/notification
+side (the biggest remaining feature); the optional scoring/complexity items (#2).
 
 ## Phase 2 (loader built; intake + email pending)
 
