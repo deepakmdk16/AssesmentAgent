@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from .agent import AssessmentResult, assess, result_to_dict
+from .constants import CORRECTNESS, ERROR, FAIL, PASS, PERFORMANCE
 from .languages import LANGUAGES, detect_language
 from .questions import HARDCODED_QUESTION, QUESTIONS
 
@@ -29,20 +30,24 @@ def format_report(result: AssessmentResult) -> str:
     elif ex.infra_error:
         lines.append(f"   Could not run: {ex.infra_error}")
     else:
-        correctness = ex.by_category("correctness")
-        performance = ex.by_category("performance")
+        correctness = ex.by_category(CORRECTNESS)
+        performance = ex.by_category(PERFORMANCE)
         c_pass = sum(1 for o in correctness if o.passed)
         lines.append(f"   Correctness: {c_pass}/{len(correctness)} cases passed")
         for o in correctness:
             status = "PASS" if o.passed else ("TLE" if o.timed_out else "FAIL")
-            lines.append(f"     [{status}] {o.name} (weight {o.weight:g}, {o.duration_s:.3f}s): "
-                         f"expected {o.expected!r}, got {o.actual!r}")
+            lines.append(
+                f"     [{status}] {o.name} (weight {o.weight:g}, {o.duration_s:.3f}s): "
+                f"expected {o.expected!r}, got {o.actual!r}"
+            )
             if o.error:
                 lines.append(f"            {o.error}")
         if performance:
             p_pass = sum(1 for o in performance if o.passed)
-            lines.append(f"   Performance: {p_pass}/{len(performance)} cases passed "
-                         f"(large input sized to the constraints)")
+            lines.append(
+                f"   Performance: {p_pass}/{len(performance)} cases passed "
+                f"(large input sized to the constraints)"
+            )
             for o in performance:
                 status = "PASS" if o.passed else ("TLE" if o.timed_out else "FAIL")
                 detail = f" — {o.error}" if o.error else f" in {o.duration_s:.3f}s"
@@ -91,13 +96,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("submission", help="Path to the candidate's source file.")
     parser.add_argument(
-        "--question", choices=sorted(QUESTIONS), default=HARDCODED_QUESTION.id,
+        "--question",
+        choices=sorted(QUESTIONS),
+        default=HARDCODED_QUESTION.id,
         help="Which built-in question to grade against (default: %(default)s).",
     )
     parser.add_argument(
         "--question-file",
         help="Grade against an interviewer-supplied question JSON file (Phase 2) "
-             "instead of a built-in --question.",
+        "instead of a built-in --question.",
     )
     parser.add_argument(
         "--language",
@@ -105,7 +112,8 @@ def main(argv: list[str] | None = None) -> int:
         help="Override language detection (otherwise inferred from file extension).",
     )
     parser.add_argument(
-        "--json", action="store_true",
+        "--json",
+        action="store_true",
         help="Emit the full report as JSON (for storing/emailing) instead of text.",
     )
     args = parser.parse_args(argv)
@@ -116,12 +124,11 @@ def main(argv: list[str] | None = None) -> int:
 
     language = args.language or detect_language(path.name)
     if language is None:
-        parser.error(
-            f"could not detect language from {path.name!r}; pass --language explicitly."
-        )
+        parser.error(f"could not detect language from {path.name!r}; pass --language explicitly.")
 
     if args.question_file:
         from .loader import load_question
+
         question = load_question(args.question_file)
     else:
         question = QUESTIONS[args.question]
@@ -132,7 +139,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result_to_dict(result), indent=2))
     else:
         print(format_report(result))
-    return {"PASS": 0, "FAIL": 1, "ERROR": 2}.get(result.verdict, 1)
+    return {PASS: 0, FAIL: 1, ERROR: 2}.get(result.verdict, 1)
 
 
 if __name__ == "__main__":

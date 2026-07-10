@@ -25,6 +25,7 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel, Field
 
+from .constants import OFFLINE_ENGINE
 from .pricing import Usage
 from .rubric import SYSTEM_PROMPT
 
@@ -74,8 +75,13 @@ _QUALITY_SCHEMA = {
         "summary": {"type": "string"},
     },
     "required": [
-        "criteria", "overall_score", "time_complexity", "meets_time_constraints",
-        "strengths", "weaknesses", "summary",
+        "criteria",
+        "overall_score",
+        "time_complexity",
+        "meets_time_constraints",
+        "strengths",
+        "weaknesses",
+        "summary",
     ],
 }
 
@@ -87,7 +93,7 @@ class JudgeConfig:
     effort: str | None = None  # None | "low" | "medium" | "high" | "max"
 
     @classmethod
-    def from_env(cls) -> "JudgeConfig":
+    def from_env(cls) -> JudgeConfig:
         return cls(
             model=os.environ.get("ASSESSMENT_MODEL", cls.model),
             thinking=os.environ.get("ASSESSMENT_THINKING", cls.thinking).lower(),
@@ -120,7 +126,7 @@ def assess_quality(
             config, question_prompt, constraints, language, source, execution_summary
         )
         return assessment, config.engine_label, usage
-    return _assess_offline(source, execution_summary, performance_ok), "offline-heuristic", None
+    return _assess_offline(source, execution_summary, performance_ok), OFFLINE_ENGINE, None
 
 
 def _assess_with_claude(
@@ -152,7 +158,10 @@ def _assess_with_claude(
     if config.thinking == "adaptive":
         kwargs["thinking"] = {"type": "adaptive"}
 
-    response = client.messages.create(
+    # The SDK's typed overloads don't cover structured `output_config`, the
+    # dynamic thinking kwarg, or a runtime (non-Literal) model id — all valid at
+    # runtime, so this call is deliberately outside mypy's view.
+    response = client.messages.create(  # type: ignore[call-overload]
         model=config.model,
         max_tokens=4000,
         # The rubric is a large, stable prefix — cache it across candidates.
@@ -226,17 +235,30 @@ def _assess_offline(source: str, execution_summary: str, performance_ok: bool) -
         return high if flag else low
 
     criteria = [
-        CriterionScore(name="robustness", score=score(has_error_handling),
-                       comment="Explicit error/edge handling detected." if has_error_handling
-                       else "No visible input validation or error handling."),
-        CriterionScore(name="readability", score=score(has_comments and reasonable_length),
-                       comment="Comments present and length is reasonable." if has_comments
-                       else "No comments; readability judged on structure only."),
-        CriterionScore(name="efficiency", score=3,
-                       comment="Not statically analysable offline; assumed adequate for the input size."),
-        CriterionScore(name="design", score=score(has_structure),
-                       comment="Uses functions/structure." if has_structure
-                       else "Written as a flat script."),
+        CriterionScore(
+            name="robustness",
+            score=score(has_error_handling),
+            comment="Explicit error/edge handling detected."
+            if has_error_handling
+            else "No visible input validation or error handling.",
+        ),
+        CriterionScore(
+            name="readability",
+            score=score(has_comments and reasonable_length),
+            comment="Comments present and length is reasonable."
+            if has_comments
+            else "No comments; readability judged on structure only.",
+        ),
+        CriterionScore(
+            name="efficiency",
+            score=3,
+            comment="Not statically analysable offline; assumed adequate for the input size.",
+        ),
+        CriterionScore(
+            name="design",
+            score=score(has_structure),
+            comment="Uses functions/structure." if has_structure else "Written as a flat script.",
+        ),
     ]
     overall = round(sum(c.score for c in criteria) / len(criteria), 1)
 
@@ -255,7 +277,9 @@ def _assess_offline(source: str, execution_summary: str, performance_ok: bool) -
         weaknesses.append("Lacks comments.")
 
     if not performance_ok:
-        weaknesses.append("Exceeded the time limit on the large input (too slow for the constraints).")
+        weaknesses.append(
+            "Exceeded the time limit on the large input (too slow for the constraints)."
+        )
 
     return QualityAssessment(
         criteria=criteria,

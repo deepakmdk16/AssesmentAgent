@@ -13,9 +13,14 @@ See [README.md](README.md) for the full flow.
 ## Stack & how to run
 
 - Python ≥ 3.10, managed with `uv`.
-- Run an assessment: `uv run assess <file> [--language X]`
+- Run an assessment: `uv run assess <file> [--language X | --question-file <json>]`
 - Run the eval harness: `uv run assess-eval`
 - Run tests: `uv run pytest`
+- Lint / format / types: `uv run ruff check .`, `uv run ruff format .`, `uv run mypy`.
+- Enable the pre-commit hooks once: `uv run pre-commit install` (the first run
+  fetches the hook repos, so it needs network). `.pre-commit-config.yaml` is
+  two-tier: a language-agnostic base (file hygiene + gitleaks secret scan) plus
+  a swappable Python slice (ruff + mypy).
 
 ## Architecture (where things live)
 
@@ -31,6 +36,10 @@ See [README.md](README.md) for the full flow.
 Before committing or pushing:
 
 1. `uv run pytest` passes (report the actual result; don't claim done unverified).
+   `uv run ruff check .` and `uv run mypy` are clean (or `pre-commit run
+   --all-files`). Domain states (`Verdict`, `Category`, `OFFLINE_ENGINE`) live
+   in `constants.py` as `Literal`s — use them, don't reintroduce raw string
+   literals, so mypy keeps catching drift.
 2. `/code-review` (or a self-review of the diff) has been run.
 3. **The live Claude judge path has been smoke-tested with a real
    `ANTHROPIC_API_KEY`** before relying on it or moving to Phase 2 — the offline

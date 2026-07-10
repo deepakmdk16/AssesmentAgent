@@ -1,0 +1,35 @@
+# Two-tier pre-commit: a language-agnostic base (reused across repos unchanged)
+# plus a per-repo Python slice. The hook *mechanism* is uniform; only the Tier-2
+# tool list changes when the stack changes.
+#
+# Setup:  uv run pre-commit install      (runs automatically on every commit)
+# Manual: uv run pre-commit run --all-files
+repos:
+  # ---- Tier 1: language-agnostic baseline ---------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-added-large-files
+      - id: check-yaml
+      - id: check-json
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks  # secret scanning — same for any language
+
+  # ---- Tier 2: Python slice (swap per stack) ------------------------------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.4
+    hooks:
+      - id: ruff          # lint (naming, complexity, bugbear, imports)
+        args: [--fix]
+      - id: ruff-format   # formatting
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.13.0
+    hooks:
+      - id: mypy
+        files: ^assessment_agent/
+        additional_dependencies: [pydantic>=2]

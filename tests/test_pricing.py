@@ -14,8 +14,9 @@ def test_output_rate():
 
 
 def test_cache_read_discount():
-    u = Usage("claude-sonnet-4-6", input_tokens=0, output_tokens=0,
-              cache_read_input_tokens=1_000_000)
+    u = Usage(
+        "claude-sonnet-4-6", input_tokens=0, output_tokens=0, cache_read_input_tokens=1_000_000
+    )
     assert u.cost_usd == pytest.approx(0.3)  # 3.0 * 0.1
 
 

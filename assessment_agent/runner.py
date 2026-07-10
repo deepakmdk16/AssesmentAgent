@@ -21,6 +21,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from .constants import CORRECTNESS, Category
 from .languages import LANGUAGES
 from .questions import TestCase
 
@@ -35,7 +36,7 @@ class TestOutcome:
     error: str | None = None
     duration_s: float = 0.0
     timed_out: bool = False
-    category: str = "correctness"
+    category: Category = CORRECTNESS
     weight: float = 1.0
 
 
@@ -62,10 +63,10 @@ class ExecutionReport:
     def passed_count(self) -> int:
         return sum(1 for o in self.outcomes if o.passed)
 
-    def by_category(self, category: str) -> list[TestOutcome]:
+    def by_category(self, category: Category) -> list[TestOutcome]:
         return [o for o in self.outcomes if o.category == category]
 
-    def category_passed(self, category: str) -> bool:
+    def category_passed(self, category: Category) -> bool:
         cases = self.by_category(category)
         return all(o.passed for o in cases)  # vacuously True if none
 
@@ -122,11 +123,16 @@ def run_submission(
         if compile_cmd is not None:
             try:
                 proc = subprocess.run(
-                    compile_cmd, cwd=workdir, capture_output=True, text=True,
+                    compile_cmd,
+                    cwd=workdir,
+                    capture_output=True,
+                    text=True,
                     timeout=compile_timeout,
                 )
             except FileNotFoundError as exc:
-                return ExecutionReport(language, None, [], infra_error=f"compiler not installed: {exc}")
+                return ExecutionReport(
+                    language, None, [], infra_error=f"compiler not installed: {exc}"
+                )
             except subprocess.TimeoutExpired:
                 return ExecutionReport(language, "compilation timed out", [])
             if proc.returncode != 0:
@@ -137,18 +143,32 @@ def run_submission(
             start = time.perf_counter()
             try:
                 proc = subprocess.run(
-                    run_cmd, cwd=workdir, input=tc.stdin, capture_output=True, text=True,
+                    run_cmd,
+                    cwd=workdir,
+                    input=tc.stdin,
+                    capture_output=True,
+                    text=True,
                     timeout=limit,
                 )
             except FileNotFoundError as exc:
                 # Runtime missing — inconclusive, not a candidate failure. Stop early.
-                return ExecutionReport(language, None, [], infra_error=f"runtime not installed: {exc}")
+                return ExecutionReport(
+                    language, None, [], infra_error=f"runtime not installed: {exc}"
+                )
             except subprocess.TimeoutExpired:
                 outcomes.append(
-                    TestOutcome(tc.name, tc.stdin, tc.expected, "", False,
-                                f"time limit exceeded (> {limit:.1f}s)",
-                                duration_s=limit, timed_out=True,
-                                category=tc.category, weight=tc.weight)
+                    TestOutcome(
+                        tc.name,
+                        tc.stdin,
+                        tc.expected,
+                        "",
+                        False,
+                        f"time limit exceeded (> {limit:.1f}s)",
+                        duration_s=limit,
+                        timed_out=True,
+                        category=tc.category,
+                        weight=tc.weight,
+                    )
                 )
                 continue
 
@@ -156,9 +176,17 @@ def run_submission(
             error = proc.stderr.strip() if proc.returncode != 0 else None
             passed = error is None and _normalize(proc.stdout) == _normalize(tc.expected)
             outcomes.append(
-                TestOutcome(tc.name, tc.stdin, tc.expected, proc.stdout.strip(), passed,
-                            error, duration_s=duration,
-                            category=tc.category, weight=tc.weight)
+                TestOutcome(
+                    tc.name,
+                    tc.stdin,
+                    tc.expected,
+                    proc.stdout.strip(),
+                    passed,
+                    error,
+                    duration_s=duration,
+                    category=tc.category,
+                    weight=tc.weight,
+                )
             )
 
         return ExecutionReport(language, None, outcomes)

@@ -22,8 +22,7 @@ def build_system_prompt() -> str:
         _read("review_procedure.md"),
         _read("scoring_scale.md"),
         _read("report_guidance.md"),
-        "# Calibration examples\n\n"
-        + "\n\n---\n\n".join(p.read_text().strip() for p in examples),
+        "# Calibration examples\n\n" + "\n\n---\n\n".join(p.read_text().strip() for p in examples),
     ]
     return "\n\n".join(parts)
 

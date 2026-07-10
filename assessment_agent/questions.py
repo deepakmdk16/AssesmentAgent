@@ -16,13 +16,15 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass
 
+from .constants import CORRECTNESS, PERFORMANCE, Category
+
 
 @dataclass(frozen=True)
 class TestCase:
     name: str
     stdin: str
     expected: str
-    category: str = "correctness"  # "correctness" | "performance"
+    category: Category = CORRECTNESS
     # Points this case is worth. Larger inputs carry more weight, so passing the
     # large (performance) case matters more than the small correctness cases.
     weight: float = 1.0
@@ -62,8 +64,7 @@ def _perf_case(name: str, n: int, seed: int = 12345, weight: float = 6.0) -> Tes
     rng = random.Random(seed)
     nums = [rng.randint(-10_000, 10_000) for _ in range(n)]
     stdin = f"{n}\n" + " ".join(map(str, nums)) + "\n"
-    return TestCase(name, stdin, str(_max_subarray(nums)),
-                    category="performance", weight=weight)
+    return TestCase(name, stdin, str(_max_subarray(nums)), category=PERFORMANCE, weight=weight)
 
 
 HARDCODED_QUESTION = Question(
@@ -105,19 +106,25 @@ def _knapsack(capacity: int, items: list[tuple[int, int]]) -> int:
     return dp[capacity]
 
 
-def _knapsack_case(name: str, capacity: int, items: list[tuple[int, int]],
-                   category: str = "correctness", weight: float = 1.0) -> TestCase:
+def _knapsack_case(
+    name: str,
+    capacity: int,
+    items: list[tuple[int, int]],
+    category: Category = CORRECTNESS,
+    weight: float = 1.0,
+) -> TestCase:
     """Build a case whose `expected` is labelled by the oracle, so the stdin and
     the expected answer can never drift apart."""
     stdin = f"{len(items)} {capacity}\n" + "".join(f"{w} {v}\n" for w, v in items)
     return TestCase(name, stdin, str(_knapsack(capacity, items)), category, weight)
 
 
-def _knapsack_perf_case(name: str, n: int, capacity: int,
-                        seed: int = 54321, weight: float = 6.0) -> TestCase:
+def _knapsack_perf_case(
+    name: str, n: int, capacity: int, seed: int = 54321, weight: float = 6.0
+) -> TestCase:
     rng = random.Random(seed)
     items = [(rng.randint(1, 1000), rng.randint(1, 1000)) for _ in range(n)]
-    return _knapsack_case(name, capacity, items, category="performance", weight=weight)
+    return _knapsack_case(name, capacity, items, category=PERFORMANCE, weight=weight)
 
 
 KNAPSACK_QUESTION = Question(
@@ -152,9 +159,7 @@ KNAPSACK_QUESTION = Question(
 
 # Registry of the available questions, keyed by id. The CLI selects one with
 # --question; the default preserves the original single-question behaviour.
-QUESTIONS: dict[str, Question] = {
-    q.id: q for q in (HARDCODED_QUESTION, KNAPSACK_QUESTION)
-}
+QUESTIONS: dict[str, Question] = {q.id: q for q in (HARDCODED_QUESTION, KNAPSACK_QUESTION)}
 
 
 def validate_question(q: Question) -> None:
@@ -183,16 +188,14 @@ def validate_question(q: Question) -> None:
             raise ValueError(
                 f"question {q.id!r}: test case {t.name!r} weight must be > 0 (got {t.weight})"
             )
-        if t.category not in ("correctness", "performance"):
+        if t.category not in (CORRECTNESS, PERFORMANCE):
             raise ValueError(
                 f"question {q.id!r}: test case {t.name!r} has invalid category {t.category!r}"
             )
         if t.expected == "":
-            raise ValueError(
-                f"question {q.id!r}: test case {t.name!r} has empty expected output"
-            )
+            raise ValueError(f"question {q.id!r}: test case {t.name!r} has empty expected output")
 
-    if not any(t.category == "performance" for t in q.test_cases):
+    if not any(t.category == PERFORMANCE for t in q.test_cases):
         raise ValueError(
             f"question {q.id!r}: needs at least one 'performance' test case "
             "(the constraint-sized TLE gate that catches too-slow solutions)"
@@ -202,6 +205,4 @@ def validate_question(q: Question) -> None:
             f"question {q.id!r}: pass_threshold must be in (0, 1], got {q.pass_threshold}"
         )
     if q.time_limit_s <= 0:
-        raise ValueError(
-            f"question {q.id!r}: time_limit_s must be > 0, got {q.time_limit_s}"
-        )
+        raise ValueError(f"question {q.id!r}: time_limit_s must be > 0, got {q.time_limit_s}")

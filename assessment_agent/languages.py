@@ -28,7 +28,9 @@ LANGUAGES: dict[str, Language] = {
     "ruby": Language("ruby", "main.rb", ["ruby", "main.rb"], time_multiplier=3.0),
     "go": Language("go", "main.go", ["go", "run", "main.go"], time_multiplier=2.0),
     # Java's public class must match the file name, so submissions are compiled as Main.
-    "java": Language("java", "Main.java", ["java", "Main"], ["javac", "Main.java"], time_multiplier=2.0),
+    "java": Language(
+        "java", "Main.java", ["java", "Main"], ["javac", "Main.java"], time_multiplier=2.0
+    ),
     "c": Language("c", "main.c", ["./program"], ["gcc", "main.c", "-o", "program"]),
     "cpp": Language("cpp", "main.cpp", ["./program"], ["g++", "main.cpp", "-o", "program"]),
     "rust": Language("rust", "main.rs", ["./program"], ["rustc", "main.rs", "-o", "program"]),

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .constants import ERROR, FAIL, PASS, PERFORMANCE, Verdict
 from .judge import QualityAssessment, assess_quality
 from .pricing import Usage
 from .questions import HARDCODED_QUESTION, Question
@@ -26,7 +27,7 @@ class AssessmentResult:
     execution: ExecutionReport
     quality: QualityAssessment
     quality_engine: str
-    verdict: str  # "PASS" | "FAIL" | "ERROR"
+    verdict: Verdict
     reason: str
     score_pct: float
     points_earned: float
@@ -56,10 +57,11 @@ def assess(
     language: str,
     question: Question = HARDCODED_QUESTION,
 ) -> AssessmentResult:
-    execution = run_submission(source, language, question.test_cases,
-                               time_limit_s=question.time_limit_s)
+    execution = run_submission(
+        source, language, question.test_cases, time_limit_s=question.time_limit_s
+    )
     execution_summary = _format_execution_summary(execution)
-    performance_ok = execution.category_passed("performance")
+    performance_ok = execution.category_passed(PERFORMANCE)
 
     quality, engine, usage = assess_quality(
         question_prompt=question.prompt,
@@ -74,10 +76,10 @@ def assess(
     threshold_pct = question.pass_threshold * 100.0
 
     if execution.infra_error:
-        verdict = "ERROR"
+        verdict = ERROR
         reason = f"Could not evaluate submission: {execution.infra_error}"
     elif execution.compile_error:
-        verdict = "FAIL"
+        verdict = FAIL
         reason = "Submission did not compile — score 0%."
     else:
         wrong = [o.name for o in execution.outcomes if not o.passed and not o.timed_out]
@@ -88,7 +90,7 @@ def assess(
         if tle:
             notes.append(f"too slow (TLE) on {', '.join(tle)}")
         note = f" ({'; '.join(notes)})" if notes else ""
-        verdict = "PASS" if pct >= threshold_pct else "FAIL"
+        verdict = PASS if pct >= threshold_pct else FAIL
         reason = (
             f"Scored {pct:.0f}% ({earned:g}/{total:g} points), "
             f"threshold {threshold_pct:.0f}%{note}. "
@@ -146,8 +148,10 @@ def result_to_dict(result: AssessmentResult) -> dict:
             "time_complexity": result.quality.time_complexity,
             "meets_time_constraints": result.quality.meets_time_constraints,
             "overall_score": result.quality.overall_score,
-            "criteria": [{"name": c.name, "score": c.score, "comment": c.comment}
-                         for c in result.quality.criteria],
+            "criteria": [
+                {"name": c.name, "score": c.score, "comment": c.comment}
+                for c in result.quality.criteria
+            ],
             "strengths": result.quality.strengths,
             "weaknesses": result.quality.weaknesses,
             "summary": result.quality.summary,

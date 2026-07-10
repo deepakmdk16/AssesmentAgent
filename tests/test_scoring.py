@@ -12,7 +12,10 @@ def _force_offline(monkeypatch):
 # A trivial question: echo the single input line back.
 def _echo_question(pass_threshold: float = 0.9) -> Question:
     return Question(
-        id="echo", title="Echo", prompt="Print the input line.", constraints="tiny",
+        id="echo",
+        title="Echo",
+        prompt="Print the input line.",
+        constraints="tiny",
         test_cases=(
             TestCase("a", "5\n", "5", weight=1.0),
             TestCase("b", "9\n", "9", weight=3.0),

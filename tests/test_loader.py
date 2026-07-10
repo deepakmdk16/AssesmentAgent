@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import copy
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from assessment_agent.agent import assess
 from assessment_agent.loader import load_question, question_from_dict
@@ -44,11 +44,19 @@ def test_loaded_question_grades_end_to_end():
 
 def _minimal_spec() -> dict:
     return {
-        "id": "q", "title": "Q", "prompt": "p", "constraints": "c",
+        "id": "q",
+        "title": "Q",
+        "prompt": "p",
+        "constraints": "c",
         "test_cases": [
             {"name": "ok", "stdin": "1\n", "expected": "1"},
-            {"name": "perf", "stdin": "1\n", "expected": "1",
-             "category": "performance", "weight": 6.0},
+            {
+                "name": "perf",
+                "stdin": "1\n",
+                "expected": "1",
+                "category": "performance",
+                "weight": 6.0,
+            },
         ],
     }
 
@@ -68,5 +76,5 @@ def test_missing_performance_case_is_rejected():
 def test_bad_schema_is_rejected():
     spec = _minimal_spec()
     del spec["prompt"]  # required field
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         question_from_dict(spec)

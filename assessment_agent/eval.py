@@ -16,6 +16,7 @@ from __future__ import annotations
 import sys
 
 from .agent import assess
+from .constants import OFFLINE_ENGINE
 from .eval_cases import EVAL_CASES
 from .questions import QUESTIONS
 
@@ -46,7 +47,7 @@ def main(argv: list[str] | None = None) -> int:
     for case in EVAL_CASES:
         result = assess(case.source, case.language, QUESTIONS[case.question_id])
         engine = result.quality_engine
-        real_model = engine != "offline-heuristic"
+        real_model = engine != OFFLINE_ENGINE
         expected = case.expected_verdict
 
         if expected is None:
@@ -93,8 +94,20 @@ def main(argv: list[str] | None = None) -> int:
         else:
             cost_cell = "-"
 
-        rows.append((case.id, case.language, result.verdict, f"{result.score_pct:.0f}%",
-                     expected or "-", status, cx_cell, mt_cell, cost_cell, case.note))
+        rows.append(
+            (
+                case.id,
+                case.language,
+                result.verdict,
+                f"{result.score_pct:.0f}%",
+                expected or "-",
+                status,
+                cx_cell,
+                mt_cell,
+                cost_cell,
+                case.note,
+            )
+        )
 
     print(f"\nEval engine: {engine}\n")
     header = ("case", "lang", "verdict", "test%", "expect", "status", "cx", "meets", "cost")

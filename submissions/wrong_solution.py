@@ -5,7 +5,7 @@ import sys
 
 d = sys.stdin.read().split()
 n = int(d[0])
-a = [int(x) for x in d[1:1 + n]]
+a = [int(x) for x in d[1 : 1 + n]]
 
 best = 0
 cur = 0

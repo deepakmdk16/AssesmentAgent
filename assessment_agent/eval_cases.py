@@ -9,13 +9,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .constants import Verdict
+
 
 @dataclass(frozen=True)
 class EvalCase:
     id: str
     language: str
     source: str
-    expected_verdict: str | None  # "PASS" | "FAIL" | None (report-only)
+    expected_verdict: Verdict | None  # None = report-only
     note: str
     # Which question to grade against (see questions.QUESTIONS).
     question_id: str = "max_subarray_sum"
@@ -24,7 +26,7 @@ class EvalCase:
     # independent). They are reported, not gated. `expected_complexity` is only
     # checked when a real model ran (the offline heuristic reports "unknown");
     # `expected_meets_constraints` is empirically grounded and checked always.
-    expected_complexity: str | None = None          # e.g. "O(n)", "O(n^2)", "O(2^n)"
+    expected_complexity: str | None = None  # e.g. "O(n)", "O(n^2)", "O(2^n)"
     expected_meets_constraints: bool | None = None
 
 

@@ -78,12 +78,21 @@ def test_correct_but_slow_is_performance_fail(monkeypatch):
 
     outcomes = [
         TestOutcome("classic", "", "6", "6", True, category="correctness", weight=1.0),
-        TestOutcome("performance_large", "", "42", "", False,
-                    error="time limit exceeded (> 6.0s)", timed_out=True,
-                    category="performance", weight=6.0),
+        TestOutcome(
+            "performance_large",
+            "",
+            "42",
+            "",
+            False,
+            error="time limit exceeded (> 6.0s)",
+            timed_out=True,
+            category="performance",
+            weight=6.0,
+        ),
     ]
     monkeypatch.setattr(
-        agent_mod, "run_submission",
+        agent_mod,
+        "run_submission",
         lambda *a, **k: ExecutionReport("python", None, outcomes),
     )
     result = assess("slow code", "python")
@@ -99,7 +108,8 @@ def test_missing_toolchain_is_error_not_fail(monkeypatch):
     from assessment_agent.runner import ExecutionReport
 
     monkeypatch.setattr(
-        agent_mod, "run_submission",
+        agent_mod,
+        "run_submission",
         lambda *a, **k: ExecutionReport("go", None, [], infra_error="runtime not installed"),
     )
     result = assess("package main", "go")

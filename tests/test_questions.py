@@ -10,9 +10,9 @@ question cannot slip in unvalidated.
 from __future__ import annotations
 
 import random
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 import pytest
 
@@ -40,8 +40,8 @@ ROOT = Path(__file__).resolve().parents[1]
 @dataclass(frozen=True)
 class OracleCheck:
     make_args: Callable[[random.Random], tuple]  # random input, as oracle args
-    fast: Callable[..., int]                      # the grading oracle
-    naive: Callable[..., int]                     # independent reference
+    fast: Callable[..., int]  # the grading oracle
+    naive: Callable[..., int]  # independent reference
 
 
 def _naive_max_subarray(nums: list[int]) -> int:
@@ -140,7 +140,10 @@ def test_reference_good_sample_scores_full(qid, path):
 # --------------------------------------------------------------------------- #
 def _q(**over) -> Question:
     base = dict(
-        id="x", title="X", prompt="p", constraints="c",
+        id="x",
+        title="X",
+        prompt="p",
+        constraints="c",
         test_cases=(
             TestCase("ok", "1\n", "1"),
             TestCase("perf", "1\n", "1", category="performance", weight=6.0),
@@ -154,17 +157,27 @@ def _q(**over) -> Question:
     "bad,match",
     [
         (dict(test_cases=(TestCase("only", "1\n", "1"),)), "performance"),
-        (dict(test_cases=(
-            TestCase("a", "1\n", "1", weight=0.0),
-            TestCase("p", "1\n", "1", category="performance", weight=6.0),
-        )), "weight"),
+        (
+            dict(
+                test_cases=(
+                    TestCase("a", "1\n", "1", weight=0.0),
+                    TestCase("p", "1\n", "1", category="performance", weight=6.0),
+                )
+            ),
+            "weight",
+        ),
         (dict(pass_threshold=1.5), "pass_threshold"),
         (dict(time_limit_s=0.0), "time_limit_s"),
         (dict(constraints="  "), "constraints"),
-        (dict(test_cases=(
-            TestCase("dup", "1\n", "1"),
-            TestCase("dup", "1\n", "1", category="performance", weight=6.0),
-        )), "unique"),
+        (
+            dict(
+                test_cases=(
+                    TestCase("dup", "1\n", "1"),
+                    TestCase("dup", "1\n", "1", category="performance", weight=6.0),
+                )
+            ),
+            "unique",
+        ),
     ],
 )
 def test_validate_question_rejects_malformed(bad, match):

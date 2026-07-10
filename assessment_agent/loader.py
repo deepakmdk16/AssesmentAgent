@@ -19,6 +19,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from .constants import CORRECTNESS, Category
 from .questions import Question, TestCase, validate_question
 
 
@@ -26,7 +27,7 @@ class _TestCaseSpec(BaseModel):
     name: str
     stdin: str
     expected: str
-    category: str = "correctness"
+    category: Category = CORRECTNESS
     weight: float = 1.0
 
 
@@ -56,8 +57,7 @@ def question_from_dict(data: dict) -> Question:
         prompt=spec.prompt,
         constraints=spec.constraints,
         test_cases=tuple(
-            TestCase(t.name, t.stdin, t.expected, t.category, t.weight)
-            for t in spec.test_cases
+            TestCase(t.name, t.stdin, t.expected, t.category, t.weight) for t in spec.test_cases
         ),
         time_limit_s=spec.time_limit_s,
         pass_threshold=spec.pass_threshold,

@@ -6,15 +6,17 @@ from assessment_agent.judge import _parse_assessment
 
 
 def _payload(score, overall):
-    return json.dumps({
-        "criteria": [{"name": "robustness", "score": score, "comment": "x"}],
-        "overall_score": overall,
-        "time_complexity": "O(n)",
-        "meets_time_constraints": True,
-        "strengths": ["a"],
-        "weaknesses": ["b"],
-        "summary": "s",
-    })
+    return json.dumps(
+        {
+            "criteria": [{"name": "robustness", "score": score, "comment": "x"}],
+            "overall_score": overall,
+            "time_complexity": "O(n)",
+            "meets_time_constraints": True,
+            "strengths": ["a"],
+            "weaknesses": ["b"],
+            "summary": "s",
+        }
+    )
 
 
 def test_out_of_range_scores_are_clamped():
