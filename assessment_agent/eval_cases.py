@@ -1,8 +1,8 @@
 """A small fixed sample for calibrating / A/B-testing the judge.
 
-Only the deterministic anchors assert a verdict (`expected_verdict`); the
-borderline cases are report-only (`None`) so you can eyeball how a given model
-scores them and tune PASS_QUALITY_THRESHOLD accordingly.
+Verdicts are now score-based (weighted tests vs. the pass threshold), so every
+case has a deterministic expected verdict independent of the quality model.
+`expected_verdict` may still be `None` for a case you only want to eyeball.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ EVAL_CASES: tuple[EvalCase, ...] = (
         id="strong",
         language="python",
         expected_verdict="PASS",
-        note="validated, decomposed, idiomatic",
+        note="validated, decomposed, idiomatic Kadane",
         source=(
             "import sys\n\n"
             "def read_numbers(stream):\n"
@@ -33,9 +33,14 @@ EVAL_CASES: tuple[EvalCase, ...] = (
             "    if len(nums) != n:\n"
             "        raise ValueError('count mismatch')\n"
             "    return nums\n\n"
+            "def max_subarray_sum(nums):\n"
+            "    best = current = nums[0]\n"
+            "    for x in nums[1:]:\n"
+            "        current = max(x, current + x)\n"
+            "        best = max(best, current)\n"
+            "    return best\n\n"
             "def main():\n"
-            "    nums = read_numbers(sys.stdin)\n"
-            "    print(max(nums), sum(nums))\n\n"
+            "    print(max_subarray_sum(read_numbers(sys.stdin)))\n\n"
             "if __name__ == '__main__':\n"
             "    main()\n"
         ),
@@ -43,36 +48,37 @@ EVAL_CASES: tuple[EvalCase, ...] = (
     EvalCase(
         id="terse_correct",
         language="python",
-        expected_verdict=None,
-        note="correct + efficient but opaque names, no validation (sits near the bar)",
+        expected_verdict="PASS",
+        note="correct + fast Kadane; scores 100% (quality is reported, not gated)",
         source=(
             "import sys\n"
             "d=sys.stdin.read().split()\n"
             "n=int(d[0]); a=[int(x) for x in d[1:1+n]]\n"
-            "print(max(a), sum(a))\n"
+            "b=c=a[0]\n"
+            "for x in a[1:]:\n"
+            "    c=max(x,c+x); b=max(b,c)\n"
+            "print(b)\n"
         ),
     ),
     EvalCase(
         id="inefficient_correct",
         language="python",
-        expected_verdict=None,
-        note="correct output but a pointless nested loop (efficiency should score low)",
+        expected_verdict="FAIL",
+        note="correct O(n^2) brute force — must TLE the performance case (too slow)",
         source=(
             "import sys\n\n"
             "def main():\n"
             "    data = sys.stdin.read().split()\n"
             "    n = int(data[0])\n"
             "    nums = [int(x) for x in data[1:1+n]]\n"
-            "    biggest = nums[0]\n"
-            "    for x in nums:\n"
-            "        for _ in nums:\n"
-            "            pass\n"
-            "        if x > biggest:\n"
-            "            biggest = x\n"
-            "    total = 0\n"
-            "    for x in nums:\n"
-            "        total += x\n"
-            "    print(biggest, total)\n\n"
+            "    best = nums[0]\n"
+            "    for i in range(n):\n"
+            "        total = 0\n"
+            "        for j in range(i, n):\n"
+            "            total += nums[j]\n"
+            "            if total > best:\n"
+            "                best = total\n"
+            "    print(best)\n\n"
             "if __name__ == '__main__':\n"
             "    main()\n"
         ),
@@ -81,24 +87,32 @@ EVAL_CASES: tuple[EvalCase, ...] = (
         id="buggy",
         language="python",
         expected_verdict="FAIL",
-        note="prints only the sum — must fail the correctness gate",
+        note="resets running sum to 0 — fails all-negative input (correctness gate)",
         source=(
             "import sys\n"
             "d=sys.stdin.read().split()\n"
             "n=int(d[0]); a=[int(x) for x in d[1:1+n]]\n"
-            "print(sum(a))\n"
+            "best=cur=0\n"
+            "for x in a:\n"
+            "    cur=max(0, cur+x); best=max(best, cur)\n"
+            "print(best)\n"
         ),
     ),
     EvalCase(
         id="good_javascript",
         language="javascript",
         expected_verdict="PASS",
-        note="cross-language check — correct, clear JS",
+        note="cross-language check — correct, clear JS Kadane",
         source=(
             "const data = require('fs').readFileSync(0, 'utf8').split(/\\s+/).filter(Boolean);\n"
             "const n = parseInt(data[0], 10);\n"
             "const nums = data.slice(1, 1 + n).map(Number);\n"
-            "console.log(`${Math.max(...nums)} ${nums.reduce((a, b) => a + b, 0)}`);\n"
+            "let best = nums[0], cur = nums[0];\n"
+            "for (let i = 1; i < n; i++) {\n"
+            "  cur = Math.max(nums[i], cur + nums[i]);\n"
+            "  best = Math.max(best, cur);\n"
+            "}\n"
+            "console.log(best);\n"
         ),
     ),
 )

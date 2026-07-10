@@ -37,11 +37,11 @@ def test_correct_and_acceptable_quality_passes():
 
 
 def test_failing_tests_force_fail():
-    # Prints a constant, so every test case mismatches.
+    # Prints a constant, so every test case mismatches → score 0% → FAIL.
     result = assess("print(0)\n", "python")
-    assert not result.execution.all_passed
     assert result.verdict == "FAIL"
-    assert "correctness" in result.reason.lower()
+    assert result.score_pct == 0.0
+    assert "wrong answer" in result.reason.lower()
 
 
 @pytest.mark.skipif(not JAVA_AVAILABLE, reason="working JDK not installed")
@@ -60,14 +60,37 @@ def test_java_nonmain_classname_still_runs():
         "  public static void main(String[] a) throws Exception {\n"
         "    java.util.Scanner s = new java.util.Scanner(System.in);\n"
         "    int n = s.nextInt();\n"
-        "    int max = Integer.MIN_VALUE, sum = 0;\n"
-        "    for (int i = 0; i < n; i++) { int x = s.nextInt(); max = Math.max(max, x); sum += x; }\n"
-        "    System.out.println(max + \" \" + sum);\n"
+        "    long best = Long.MIN_VALUE, cur = 0;\n"
+        "    for (int i = 0; i < n; i++) { int x = s.nextInt(); cur = Math.max(x, cur + x); best = Math.max(best, cur); }\n"
+        "    System.out.println(best);\n"
         "  }\n"
         "}\n"
     )
     result = assess(src, "java")
     assert result.execution.all_passed
+
+
+def test_correct_but_slow_is_performance_fail(monkeypatch):
+    # Correct on functional cases but TLE on the performance case → FAIL (too slow),
+    # distinct from a wrong-answer failure.
+    import assessment_agent.agent as agent_mod
+    from assessment_agent.runner import ExecutionReport, TestOutcome
+
+    outcomes = [
+        TestOutcome("classic", "", "6", "6", True, category="correctness", weight=1.0),
+        TestOutcome("performance_large", "", "42", "", False,
+                    error="time limit exceeded (> 6.0s)", timed_out=True,
+                    category="performance", weight=6.0),
+    ]
+    monkeypatch.setattr(
+        agent_mod, "run_submission",
+        lambda *a, **k: ExecutionReport("python", None, outcomes),
+    )
+    result = assess("slow code", "python")
+    # Earns 1 of 7 points (14%) → below the 90% bar → FAIL, flagged as too slow.
+    assert result.verdict == "FAIL"
+    assert result.score_pct < 90
+    assert "tle" in result.reason.lower() or "slow" in result.reason.lower()
 
 
 def test_missing_toolchain_is_error_not_fail(monkeypatch):

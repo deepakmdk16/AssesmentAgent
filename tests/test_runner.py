@@ -36,3 +36,12 @@ def test_unsupported_language_raises():
 def test_normalize_ignores_trailing_whitespace():
     assert _normalize("3 6 \n") == _normalize("3 6")
     assert _normalize("a\nb\n") == "a\nb"
+
+
+def test_time_limit_exceeded_is_flagged():
+    src = "import time\ntime.sleep(3)\nprint('x')\n"
+    report = run_submission(src, "python", (tc("", "x"),), time_limit_s=0.2)
+    outcome = report.outcomes[0]
+    assert outcome.timed_out
+    assert not outcome.passed
+    assert "time limit" in (outcome.error or "").lower()

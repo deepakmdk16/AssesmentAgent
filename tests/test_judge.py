@@ -9,6 +9,8 @@ def _payload(score, overall):
     return json.dumps({
         "criteria": [{"name": "robustness", "score": score, "comment": "x"}],
         "overall_score": overall,
+        "time_complexity": "O(n)",
+        "meets_time_constraints": True,
         "strengths": ["a"],
         "weaknesses": ["b"],
         "summary": "s",

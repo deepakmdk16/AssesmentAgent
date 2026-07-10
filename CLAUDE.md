@@ -44,8 +44,10 @@ Before committing or pushing:
   environment only.
 - Executing candidate code is untrusted input — the runner protects only with a
   timeout. Do not weaken that, and note the sandboxing gap in any production work.
-- Keep the correctness gate (all tests pass) ahead of the quality gate in the
-  verdict logic — a failing candidate must never PASS on quality alone.
+- The verdict is score-based: `PASS` iff the weighted test score meets the
+  question's `pass_threshold`, else `FAIL` (`ERROR` only when the code couldn't
+  be run). Code quality is reported but must **not** gate the verdict. A wrong
+  answer or a TLE forfeits that case's points — it must never silently earn them.
 
 ## Phase 2 (planned, not built)
 

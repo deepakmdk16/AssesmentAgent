@@ -2,7 +2,9 @@
 
 Each submission is compiled (if needed) and run once per test case in an
 isolated temp directory, with the test input fed on stdin and stdout compared
-against the expected output.
+against the expected output. Each run is bounded by a per-language time limit,
+so a correct-but-too-slow solution registers as a time-limit-exceeded (TLE)
+failure rather than a wrong answer.
 
 Security note: this executes untrusted candidate code with only a timeout for
 protection. For production use, run this inside a locked-down sandbox
@@ -15,6 +17,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -30,6 +33,10 @@ class TestOutcome:
     actual: str
     passed: bool
     error: str | None = None
+    duration_s: float = 0.0
+    timed_out: bool = False
+    category: str = "correctness"
+    weight: float = 1.0
 
 
 @dataclass
@@ -55,6 +62,20 @@ class ExecutionReport:
     def passed_count(self) -> int:
         return sum(1 for o in self.outcomes if o.passed)
 
+    def by_category(self, category: str) -> list[TestOutcome]:
+        return [o for o in self.outcomes if o.category == category]
+
+    def category_passed(self, category: str) -> bool:
+        cases = self.by_category(category)
+        return all(o.passed for o in cases)  # vacuously True if none
+
+    def score(self) -> tuple[float, float, float]:
+        """Return (points_earned, points_total, percentage) by test weight."""
+        total = sum(o.weight for o in self.outcomes)
+        earned = sum(o.weight for o in self.outcomes if o.passed)
+        pct = 100.0 * earned / total if total else 0.0
+        return earned, total, pct
+
 
 def _normalize(text: str) -> str:
     """Trim trailing whitespace per line and surrounding blank lines."""
@@ -74,13 +95,16 @@ def run_submission(
     language: str,
     test_cases: tuple[TestCase, ...],
     *,
-    run_timeout: int = 10,
+    time_limit_s: float = 2.0,
     compile_timeout: int = 60,
 ) -> ExecutionReport:
     lang = LANGUAGES.get(language)
     if lang is None:
         supported = ", ".join(sorted(LANGUAGES))
         raise ValueError(f"Unsupported language {language!r}. Supported: {supported}")
+
+    # Language-scaled limit (interpreted languages get more slack), as CP judges do.
+    limit = max(0.1, time_limit_s * lang.time_multiplier)
 
     source_filename = lang.source_filename
     compile_cmd = lang.compile
@@ -110,10 +134,11 @@ def run_submission(
 
         outcomes: list[TestOutcome] = []
         for tc in test_cases:
+            start = time.perf_counter()
             try:
                 proc = subprocess.run(
                     run_cmd, cwd=workdir, input=tc.stdin, capture_output=True, text=True,
-                    timeout=run_timeout,
+                    timeout=limit,
                 )
             except FileNotFoundError as exc:
                 # Runtime missing — inconclusive, not a candidate failure. Stop early.
@@ -121,14 +146,19 @@ def run_submission(
             except subprocess.TimeoutExpired:
                 outcomes.append(
                     TestOutcome(tc.name, tc.stdin, tc.expected, "", False,
-                                f"timed out after {run_timeout}s")
+                                f"time limit exceeded (> {limit:.1f}s)",
+                                duration_s=limit, timed_out=True,
+                                category=tc.category, weight=tc.weight)
                 )
                 continue
 
+            duration = time.perf_counter() - start
             error = proc.stderr.strip() if proc.returncode != 0 else None
             passed = error is None and _normalize(proc.stdout) == _normalize(tc.expected)
             outcomes.append(
-                TestOutcome(tc.name, tc.stdin, tc.expected, proc.stdout.strip(), passed, error)
+                TestOutcome(tc.name, tc.stdin, tc.expected, proc.stdout.strip(), passed,
+                            error, duration_s=duration,
+                            category=tc.category, weight=tc.weight)
             )
 
         return ExecutionReport(language, None, outcomes)

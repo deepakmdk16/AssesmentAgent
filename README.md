@@ -2,33 +2,49 @@
 
 An agent that grades a candidate's coding-interview submission. It runs the
 candidate's code (in whatever language they wrote it), checks the output
-against the expected results, judges the code quality, and issues a
-**PASS / FAIL** verdict.
+against the expected results **and against a time limit sized to the problem's
+constraints**, judges the code quality (including time complexity), and issues a
+**PASS / FAIL / ERROR** verdict.
 
 ## How it works
 
 ```
 candidate source ──▶ [1] execute per language ──▶ [2] correctness gate
                                                         │
-                          all tests pass? ──────────────┤
                                                         ▼
-                                     [3] code-quality judge (Claude)
+                                     [3] performance gate (time limit / TLE)
                                                         │
                                                         ▼
-                                     [4] PASS / FAIL verdict + summary
+                                     [4] code-quality judge (Claude)
+                                                        │
+                                                        ▼
+                             [5] PASS / FAIL / ERROR verdict + summary
 ```
 
 1. **Execute** — the submission reads a test case on stdin and writes to
    stdout. A per-language registry ([languages.py](assessment_agent/languages.py))
-   knows how to compile/run Python, JavaScript, Ruby, Go, Java, C, C++, Rust.
-2. **Correctness gate** — every test case must match expected output, or the
-   verdict is FAIL regardless of quality.
-3. **Quality judge** ([judge.py](assessment_agent/judge.py)) — Claude Opus 4.8
-   scores robustness, readability, efficiency, and design against a rubric and
-   returns a structured result. With **no API key**, a deterministic offline
-   heuristic runs instead so you can build and test the pipeline now.
-4. **Verdict** ([agent.py](assessment_agent/agent.py)) — PASS requires all
-   tests to pass **and** overall quality ≥ 3.0/5.
+   knows how to compile/run Python, JavaScript, Ruby, Go, Java, C, C++, Rust,
+   each with a time-limit multiplier (interpreted languages get more slack).
+2. **Weighted score** — every test case carries points, and **larger inputs are
+   worth more**. Correctness cases are small (few points each); the large,
+   generated *performance* case is worth the most. The candidate earns
+   `passed points / total points` as a percentage.
+3. **Performance = points, not a separate gate** — the performance case is sized
+   to the constraints so a sub-optimal solution (e.g. O(n²) where O(n) is
+   required) **exceeds the time limit (TLE)** and simply forfeits those (large)
+   points — just like a CodeChef/Codeforces judge. A wrong answer forfeits its
+   case's points too; both are shown distinctly in the report.
+4. **Quality report** ([judge.py](assessment_agent/judge.py)) — Claude scores
+   robustness, readability, efficiency, and design against a rubric, **states the
+   Big-O time complexity**, and says whether it meets the constraints. Quality is
+   always **reported but does not gate the verdict**. With **no API key**, a
+   deterministic offline heuristic runs (it can't analyse Big-O, so it reports
+   complexity as unknown — but the empirical TLE still costs points).
+5. **Verdict** ([agent.py](assessment_agent/agent.py)) — **PASS if the score
+   meets the question's pass threshold (default 90%), else FAIL.** ERROR means the
+   submission couldn't be run (e.g. toolchain missing). The full report — score,
+   every test case (input, expected, actual, duration, TLE), and the quality
+   assessment — is produced regardless of verdict, and can be emitted as JSON.
 
 ## Usage
 
@@ -36,9 +52,30 @@ candidate source ──▶ [1] execute per language ──▶ [2] correctness ga
 uv run assess submissions/good_solution.py          # language auto-detected
 uv run assess submissions/good_solution.js
 uv run assess path/to/file --language cpp           # override detection
+uv run assess path/to/file --json                   # full report as JSON (store/email)
 ```
 
-Exit code is `0` on PASS, `1` on FAIL.
+Exit code is `0` on PASS, `1` on FAIL, `2` on ERROR (submission couldn't be run).
+
+## Constraints drive the performance gate
+
+A TLE is **not** a judgement about the algorithm in the abstract — it is decided
+empirically by running the submission on an input sized to the problem's
+constraints, under a per-language time limit. So whether an O(n²) solution is
+acceptable depends entirely on the constraints, exactly like CodeChef /
+Codeforces / LeetCode / HackerRank:
+
+- Small `N` (e.g. `N ≤ 10^4`) → an O(n²) solution finishes in time → **accepted**.
+- Large `N` (e.g. `N ≥ 10^5`) → the same O(n²) solution TLEs → **rejected**;
+  an O(n log n) / O(n) solution is required.
+
+The interviewer expresses the *required* complexity implicitly, by choosing the
+constraint size (`Question.constraints`), the time limit (`Question.time_limit_s`,
+scaled per language), and how large the generated performance case is — not by
+declaring "must be O(n)". To accept slower solutions, set a smaller `N` and/or a
+more generous limit; nothing else changes. The quality judge additionally
+*reports* the Big-O and whether it meets the constraints, so the interviewer sees
+"O(n²), acceptable for N ≤ 10^4" and keeps the final policy call.
 
 ## Going live (real Claude review)
 
@@ -87,11 +124,11 @@ ASSESSMENT_MODEL=claude-sonnet-4-6 uv run assess-eval
 ASSESSMENT_MODEL=claude-opus-4-8 ASSESSMENT_THINKING=adaptive uv run assess-eval
 ```
 
-Deterministic anchors (a strong solution → PASS, a buggy one → FAIL) are
-asserted; borderline cases are report-only so you can eyeball scores and tune
-`PASS_QUALITY_THRESHOLD`. Cases live in
-[eval_cases.py](assessment_agent/eval_cases.py). (Without an API key the
-offline heuristic runs, which is not reliable for calibration — use a real key.)
+Verdicts are score-based, so every anchor is deterministic and holds regardless
+of the quality model — the A/B compares the **quality report** (complexity,
+criteria, cost), not the verdict. Cases live in
+[eval_cases.py](assessment_agent/eval_cases.py). (Without an API key the offline
+heuristic runs — fine for the verdict anchors, not for judging quality.)
 
 ## Phase 1 vs Phase 2
 

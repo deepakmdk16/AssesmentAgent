@@ -5,14 +5,20 @@ submission. Follow this procedure exactly and do not deviate.
 
 ## Steps
 
-1. Read the PROBLEM STATEMENT so you know what a correct solution must do.
+1. Read the PROBLEM STATEMENT and CONSTRAINTS so you know what a correct
+   solution must do and how large the input can get.
 2. Treat the AUTOMATED TEST RESULTS as the ground truth for functional
-   correctness. You do NOT run the code yourself — a separate deterministic
-   runner already did, and its results are authoritative. Never contradict them.
+   correctness AND timing. You do NOT run the code yourself — a separate
+   deterministic runner already did, and its results are authoritative. A case
+   marked `TLE` exceeded the time limit. Never contradict these results.
 3. Read the CANDIDATE SUBMISSION and evaluate the quality of the code *beyond*
    whether it passes: how it is written, not just what it outputs.
-4. Score each criterion below on the 1–5 scale (see the scoring scale section).
-5. Produce the report per the report guidance section.
+4. Determine the solution's **time complexity** (Big-O) by reading the code, and
+   decide whether it is fast enough for the stated constraints. A performance
+   TLE in the test results is strong evidence the complexity is too high; make
+   your stated complexity consistent with that evidence.
+5. Score each criterion below on the 1–5 scale (see the scoring scale section).
+6. Produce the report per the report guidance section.
 
 ## Criteria (score each 1–5)
 
@@ -22,9 +28,11 @@ submission. Follow this procedure exactly and do not deviate.
 - **readability** — naming, structure, and adherence to the idiomatic style of
   the submission's language. Would a teammate understand it quickly? Comments
   help but are not required if the code is self-explanatory.
-- **efficiency** — time and space complexity appropriate to the problem. Flag
+- **efficiency** — time and space complexity appropriate to the CONSTRAINTS,
+  not just to the small example. A solution that is correct but whose
+  complexity is too high for the input size (and TLEs the performance case) must
+  score low here — being correct does not rescue the efficiency score. Flag
   needless passes, quadratic work where linear suffices, or wasted allocation.
-  Do not over-penalize simple problems that don't need optimization.
 - **design** — overall structure and clarity of the approach: sensible
   decomposition, no tangled control flow, no dead code.
 

@@ -6,10 +6,9 @@ match a bigger one):
     ASSESSMENT_MODEL=claude-sonnet-4-6 uv run assess-eval
     ASSESSMENT_MODEL=claude-opus-4-8 ASSESSMENT_THINKING=adaptive uv run assess-eval
 
-Asserted cases (strong/buggy) check the verdict; borderline cases are
-report-only so you can eyeball scores and tune PASS_QUALITY_THRESHOLD.
-Without an API key it runs the offline heuristic (useful only for the
-deterministic anchors, not for real calibration).
+Verdicts are score-based (weighted tests vs. the pass threshold), so every
+anchor is deterministic and holds regardless of the quality model — the A/B is
+about the quality report (complexity, criteria, cost), not the verdict.
 """
 
 from __future__ import annotations
@@ -35,7 +34,6 @@ def main(argv: list[str] | None = None) -> int:
     for case in EVAL_CASES:
         result = assess(case.source, case.language)
         engine = result.quality_engine
-        overall = result.quality.overall_score
         expected = case.expected_verdict
 
         if expected is None:
@@ -60,11 +58,11 @@ def main(argv: list[str] | None = None) -> int:
         else:
             cost_cell = "-"
 
-        rows.append((case.id, case.language, result.verdict, f"{overall:.1f}",
+        rows.append((case.id, case.language, result.verdict, f"{result.score_pct:.0f}%",
                      expected or "-", status, cost_cell, case.note))
 
     print(f"\nEval engine: {engine}\n")
-    header = ("case", "lang", "verdict", "score", "expect", "status", "cost")
+    header = ("case", "lang", "verdict", "test%", "expect", "status", "cost")
     widths = (20, 11, 8, 6, 7, 9, 9)
     line = "  ".join(f"{header[i]:<{widths[i]}}" for i in range(len(widths))) + "  note"
     print(line)

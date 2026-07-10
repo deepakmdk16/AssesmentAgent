@@ -38,6 +38,8 @@ class CriterionScore(BaseModel):
 class QualityAssessment(BaseModel):
     criteria: list[CriterionScore]
     overall_score: float = Field(ge=1, le=5)
+    time_complexity: str  # e.g. "O(n)", "O(n log n)", "O(n^2)"
+    meets_time_constraints: bool
     strengths: list[str]
     weaknesses: list[str]
     summary: str
@@ -65,11 +67,16 @@ _QUALITY_SCHEMA = {
             },
         },
         "overall_score": {"type": "number"},
+        "time_complexity": {"type": "string"},
+        "meets_time_constraints": {"type": "boolean"},
         "strengths": {"type": "array", "items": {"type": "string"}},
         "weaknesses": {"type": "array", "items": {"type": "string"}},
         "summary": {"type": "string"},
     },
-    "required": ["criteria", "overall_score", "strengths", "weaknesses", "summary"],
+    "required": [
+        "criteria", "overall_score", "time_complexity", "meets_time_constraints",
+        "strengths", "weaknesses", "summary",
+    ],
 }
 
 
@@ -98,22 +105,31 @@ class JudgeConfig:
 
 
 def assess_quality(
-    *, question_prompt: str, language: str, source: str, test_summary: str
+    *,
+    question_prompt: str,
+    constraints: str,
+    language: str,
+    source: str,
+    execution_summary: str,
+    performance_ok: bool,
 ) -> tuple[QualityAssessment, str, Usage | None]:
     """Return (assessment, engine, usage). usage is None on the offline path."""
     if os.environ.get("ANTHROPIC_API_KEY"):
         config = JudgeConfig.from_env()
-        assessment, usage = _assess_with_claude(config, question_prompt, language, source, test_summary)
+        assessment, usage = _assess_with_claude(
+            config, question_prompt, constraints, language, source, execution_summary
+        )
         return assessment, config.engine_label, usage
-    return _assess_offline(source, test_summary), "offline-heuristic", None
+    return _assess_offline(source, execution_summary, performance_ok), "offline-heuristic", None
 
 
 def _assess_with_claude(
     config: JudgeConfig,
     question_prompt: str,
+    constraints: str,
     language: str,
     source: str,
-    test_summary: str,
+    execution_summary: str,
 ) -> tuple[QualityAssessment, Usage]:
     import anthropic
 
@@ -121,8 +137,10 @@ def _assess_with_claude(
 
     user_content = (
         f"PROBLEM STATEMENT:\n{question_prompt}\n\n"
+        f"CONSTRAINTS:\n{constraints}\n\n"
         f"LANGUAGE: {language}\n\n"
-        f"AUTOMATED TEST RESULTS (ground truth for correctness):\n{test_summary}\n\n"
+        f"AUTOMATED TEST RESULTS (ground truth for correctness and timing; a TLE "
+        f"marks a case that exceeded the time limit):\n{execution_summary}\n\n"
         f"CANDIDATE SUBMISSION:\n```{language}\n{source}\n```"
     )
 
@@ -184,8 +202,12 @@ def _parse_assessment(text: str, stop_reason: str | None) -> QualityAssessment:
     return QualityAssessment.model_validate(data)
 
 
-def _assess_offline(source: str, test_summary: str) -> QualityAssessment:
-    """A crude, deterministic stand-in for the LLM judge (no API key needed)."""
+def _assess_offline(source: str, execution_summary: str, performance_ok: bool) -> QualityAssessment:
+    """A crude, deterministic stand-in for the LLM judge (no API key needed).
+
+    The offline heuristic cannot analyse Big-O from source, so it reports the
+    complexity as unknown and reflects only the empirical performance result.
+    """
     lower = source.lower()
     nonblank = [ln for ln in source.splitlines() if ln.strip()]
     loc = len(nonblank)
@@ -232,13 +254,19 @@ def _assess_offline(source: str, test_summary: str) -> QualityAssessment:
     if not has_comments:
         weaknesses.append("Lacks comments.")
 
+    if not performance_ok:
+        weaknesses.append("Exceeded the time limit on the large input (too slow for the constraints).")
+
     return QualityAssessment(
         criteria=criteria,
         overall_score=overall,
+        time_complexity="unknown (offline heuristic cannot analyse Big-O)",
+        meets_time_constraints=performance_ok,
         strengths=strengths,
         weaknesses=weaknesses or ["None flagged by the offline heuristic."],
         summary=(
             "[offline heuristic — set ANTHROPIC_API_KEY for a real Claude review] "
-            f"~{loc} lines of code. Test outcome: {test_summary.splitlines()[0] if test_summary else 'n/a'}."
+            f"~{loc} lines of code. Test outcome: "
+            f"{execution_summary.splitlines()[0] if execution_summary else 'n/a'}."
         ),
     )

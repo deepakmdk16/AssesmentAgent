@@ -17,15 +17,18 @@ class Language:
     run: list[str]
     # argv run once in the work dir before the test cases; None for interpreted langs.
     compile: list[str] | None = None
+    # Per-language slack on the time limit (interpreted/VM languages are slower),
+    # mirroring how competitive-programming judges scale limits by language.
+    time_multiplier: float = 1.0
 
 
 LANGUAGES: dict[str, Language] = {
-    "python": Language("python", "main.py", ["python3", "main.py"]),
-    "javascript": Language("javascript", "main.js", ["node", "main.js"]),
-    "ruby": Language("ruby", "main.rb", ["ruby", "main.rb"]),
-    "go": Language("go", "main.go", ["go", "run", "main.go"]),
+    "python": Language("python", "main.py", ["python3", "main.py"], time_multiplier=3.0),
+    "javascript": Language("javascript", "main.js", ["node", "main.js"], time_multiplier=2.0),
+    "ruby": Language("ruby", "main.rb", ["ruby", "main.rb"], time_multiplier=3.0),
+    "go": Language("go", "main.go", ["go", "run", "main.go"], time_multiplier=2.0),
     # Java's public class must match the file name, so submissions are compiled as Main.
-    "java": Language("java", "Main.java", ["java", "Main"], ["javac", "Main.java"]),
+    "java": Language("java", "Main.java", ["java", "Main"], ["javac", "Main.java"], time_multiplier=2.0),
     "c": Language("c", "main.c", ["./program"], ["gcc", "main.c", "-o", "program"]),
     "cpp": Language("cpp", "main.cpp", ["./program"], ["g++", "main.cpp", "-o", "program"]),
     "rust": Language("rust", "main.rs", ["./program"], ["rustc", "main.rs", "-o", "program"]),
