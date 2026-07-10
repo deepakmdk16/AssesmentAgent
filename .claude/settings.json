@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -c 'if ((.tool_input.command // \"\") | test(\"uv run assess|assess-eval\")) then {hookSpecificOutput:{hookEventName:\"PreToolUse\",permissionDecision:\"ask\",permissionDecisionReason:\"Runs the paid Anthropic judge - confirm to incur API cost.\"}} else empty end'",
+            "statusMessage": "Checking for paid API command"
+          }
+        ]
+      }
+    ]
+  }
+}

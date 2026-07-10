@@ -8,7 +8,8 @@ this file is silent, the global rules apply.
 An agent that grades a candidate's coding-interview submission: runs the code
 (in whatever language it's written), checks output against expected results,
 judges code quality with an LLM, and issues a PASS / FAIL / ERROR verdict.
-See [README.md](README.md) for the full flow.
+See [README.md](README.md) for the full flow, and
+[CONVENTIONS.md](CONVENTIONS.md) for the concrete, checkable design rules.
 
 ## Stack & how to run
 
