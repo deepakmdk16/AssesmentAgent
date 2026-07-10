@@ -49,7 +49,30 @@ Before committing or pushing:
   be run). Code quality is reported but must **not** gate the verdict. A wrong
   answer or a TLE forfeits that case's points — it must never silently earn them.
 
+## Status & next steps
+
+**Current status (Phase 1 complete):** multi-language runner, weighted scoring
+with a per-question pass threshold (default 90%), performance/TLE gate sized to
+the constraints, LLM quality judge with offline fallback and Big-O reporting,
+`--json` report export, an eval harness, and a passing test suite. The
+`/add-question` and `/ship` skills are in `.claude/skills/`.
+
+**Open items:**
+1. **Live Claude judge path is unverified** — everything is tested against the
+   *offline heuristic*; the real `client.messages.create` call (schema, effort,
+   caching, complexity fields) has never run against the API. Smoke-test it with
+   a real `ANTHROPIC_API_KEY` (`uv run assess submissions/good_solution.py` and
+   `uv run assess-eval`) before trusting the quality/complexity output.
+2. **Phase 2 not built** (below).
+
+**Good next tasks:** run the live smoke-test (#1); build Phase 2; optionally add
+a composite score (fold quality into the final % so it can affect PASS/FAIL);
+generalize `questions._perf_case` to take an `oracle` callable so new questions
+don't hardcode the max-subarray oracle.
+
 ## Phase 2 (planned, not built)
 
 Interviewer supplies the question + expected I/O at runtime (same `Question`
-shape), and the agent emails the interviewer the result.
+shape — use the `/add-question` skill's recipe), and the agent emails the
+interviewer the result. Still to design: interviewer intake and the email/
+notification side (the question-authoring mechanics are covered by the skill).
