@@ -17,6 +17,13 @@ import sys
 
 from .agent import assess
 from .eval_cases import EVAL_CASES
+from .questions import QUESTIONS
+
+
+def _norm_cx(s: str) -> str:
+    """Normalize a complexity string for comparison: keep only alphanumerics and
+    lowercase, so 'O(N*W)', 'O(n*w)' and 'O(nW)' all collapse to 'onw'."""
+    return "".join(ch for ch in s.lower() if ch.isalnum())
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -25,6 +32,11 @@ def main(argv: list[str] | None = None) -> int:
     matched = 0
     engine = ""
 
+    # Labeled quality-agreement tallies (reported, not gated): complexity is only
+    # checked when a real model ran; meets-constraints is checked always.
+    cx_checked = cx_matched = 0
+    mt_checked = mt_matched = 0
+
     total_cost = 0.0
     total_in = 0
     total_out = 0
@@ -32,8 +44,9 @@ def main(argv: list[str] | None = None) -> int:
     priced_cases = 0
 
     for case in EVAL_CASES:
-        result = assess(case.source, case.language)
+        result = assess(case.source, case.language, QUESTIONS[case.question_id])
         engine = result.quality_engine
+        real_model = engine != "offline-heuristic"
         expected = case.expected_verdict
 
         if expected is None:
@@ -45,6 +58,28 @@ def main(argv: list[str] | None = None) -> int:
         else:
             status = "MISMATCH"
             asserted += 1
+
+        # Complexity label — meaningful only with a real judge.
+        if case.expected_complexity is not None and real_model:
+            cx_checked += 1
+            if _norm_cx(case.expected_complexity) == _norm_cx(result.quality.time_complexity):
+                cx_cell = "OK"
+                cx_matched += 1
+            else:
+                cx_cell = "x"
+        else:
+            cx_cell = "-"
+
+        # Meets-constraints label — empirically grounded, checked in both modes.
+        if case.expected_meets_constraints is not None:
+            mt_checked += 1
+            if result.quality.meets_time_constraints == case.expected_meets_constraints:
+                mt_cell = "OK"
+                mt_matched += 1
+            else:
+                mt_cell = "x"
+        else:
+            mt_cell = "-"
 
         if result.usage is not None:
             u = result.usage
@@ -59,20 +94,26 @@ def main(argv: list[str] | None = None) -> int:
             cost_cell = "-"
 
         rows.append((case.id, case.language, result.verdict, f"{result.score_pct:.0f}%",
-                     expected or "-", status, cost_cell, case.note))
+                     expected or "-", status, cx_cell, mt_cell, cost_cell, case.note))
 
     print(f"\nEval engine: {engine}\n")
-    header = ("case", "lang", "verdict", "test%", "expect", "status", "cost")
-    widths = (20, 11, 8, 6, 7, 9, 9)
+    header = ("case", "lang", "verdict", "test%", "expect", "status", "cx", "meets", "cost")
+    widths = (20, 11, 8, 6, 7, 9, 4, 5, 9)
     line = "  ".join(f"{header[i]:<{widths[i]}}" for i in range(len(widths))) + "  note"
     print(line)
     print("-" * len(line))
     for r in rows:
-        print("  ".join(f"{r[i]:<{widths[i]}}" for i in range(len(widths))) + "  " + r[7])
+        print("  ".join(f"{r[i]:<{widths[i]}}" for i in range(len(widths))) + "  " + r[-1])
 
     print(f"\nAsserted verdicts: {matched}/{asserted} matched.")
     if asserted != matched:
         print("Some anchors mismatched — investigate before trusting this config.")
+
+    print(
+        f"Quality labels (reported, not gated): complexity {cx_matched}/{cx_checked} matched"
+        + ("" if cx_checked else " (real model only)")
+        + f", meets-constraints {mt_matched}/{mt_checked} matched."
+    )
 
     if priced_cases:
         avg = total_cost / priced_cases

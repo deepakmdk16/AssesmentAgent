@@ -51,11 +51,19 @@ Before committing or pushing:
 
 ## Status & next steps
 
-**Current status (Phase 1 complete):** multi-language runner, weighted scoring
-with a per-question pass threshold (default 90%), performance/TLE gate sized to
-the constraints, LLM quality judge with offline fallback and Big-O reporting,
-`--json` report export, an eval harness, and a passing test suite. The
-`/add-question` and `/ship` skills are in `.claude/skills/`.
+**Current status:** multi-language runner, weighted scoring with a per-question
+pass threshold (default 90%), performance/TLE gate sized to the constraints, LLM
+quality judge with offline fallback and Big-O reporting, `--json` report export,
+and an eval harness. **Two built-in questions** (`max_subarray_sum`,
+`knapsack_01`) selectable with `--question`. A **generic, registry-driven test
+suite** ([tests/test_questions.py](tests/test_questions.py)) covers every
+question automatically — structural `validate_question` invariants, an
+independent oracle-vs-naive differential check (so `expected` is no longer
+tautologically defined by the grading oracle), good-sample 100%, and a coverage
+test that fails if a new question isn't registered. **Phase 2 loader is built**:
+`--question-file <path>` loads an interviewer-supplied question JSON
+([loader.py](assessment_agent/loader.py), example `examples/sum_of_n.json`),
+with optional args-based `example_*` / advisory `required_complexity` fields.
 
 **Open items:**
 1. **Live Claude judge path is unverified** — everything is tested against the
@@ -63,16 +71,24 @@ the constraints, LLM quality judge with offline fallback and Big-O reporting,
    caching, complexity fields) has never run against the API. Smoke-test it with
    a real `ANTHROPIC_API_KEY` (`uv run assess submissions/good_solution.py` and
    `uv run assess-eval`) before trusting the quality/complexity output.
-2. **Phase 2 not built** (below).
+2. **Judge-quality evals need a real model to exercise them** — `EvalCase` now
+   carries labeled quality expectations (`expected_complexity`,
+   `expected_meets_constraints`), a `question_id`, and knapsack anchors, and
+   `assess-eval` reports complexity/meets-constraints agreement. But complexity
+   agreement is only scored with a real `ANTHROPIC_API_KEY` (offline reports
+   unknown), so it has never actually run. Do this as part of the #1 smoke-test.
+3. **Phase 2 intake + email not built** (below).
 
-**Good next tasks:** run the live smoke-test (#1); build Phase 2; optionally add
-a composite score (fold quality into the final % so it can affect PASS/FAIL);
-generalize `questions._perf_case` to take an `oracle` callable so new questions
-don't hardcode the max-subarray oracle.
+**Good next tasks:** run the live smoke-test (#1), which also exercises the new
+complexity labels (#2); build the Phase 2 interviewer intake + email/
+notification side; optionally surface `required_complexity` in the judge report;
+optionally add a composite score (fold quality into the final % so it can affect
+PASS/FAIL).
 
-## Phase 2 (planned, not built)
+## Phase 2 (loader built; intake + email pending)
 
-Interviewer supplies the question + expected I/O at runtime (same `Question`
-shape — use the `/add-question` skill's recipe), and the agent emails the
-interviewer the result. Still to design: interviewer intake and the email/
-notification side (the question-authoring mechanics are covered by the skill).
+The interviewer supplies the question + expected I/O at runtime as a JSON file
+(`--question-file`, same `Question` shape — use the `/add-question` skill's
+recipe). The interviewer is the oracle (the file carries every `expected`).
+**Still to build:** interviewer intake (how the question/submission arrive) and
+emailing the interviewer the result.

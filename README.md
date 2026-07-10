@@ -53,7 +53,12 @@ uv run assess submissions/good_solution.py          # language auto-detected
 uv run assess submissions/good_solution.js
 uv run assess path/to/file --language cpp           # override detection
 uv run assess path/to/file --json                   # full report as JSON (store/email)
+uv run assess submissions/knapsack_good.py --question knapsack_01   # pick the question
 ```
+
+Two built-in questions ship today: `max_subarray_sum` (the default) and
+`knapsack_01` (0/1 knapsack, where an O(2^N) brute force TLEs the performance
+case and an O(N*W) DP is required). Select with `--question <id>`.
 
 Exit code is `0` on PASS, `1` on FAIL, `2` on ERROR (submission couldn't be run).
 
@@ -125,18 +130,33 @@ ASSESSMENT_MODEL=claude-opus-4-8 ASSESSMENT_THINKING=adaptive uv run assess-eval
 ```
 
 Verdicts are score-based, so every anchor is deterministic and holds regardless
-of the quality model — the A/B compares the **quality report** (complexity,
-criteria, cost), not the verdict. Cases live in
-[eval_cases.py](assessment_agent/eval_cases.py). (Without an API key the offline
-heuristic runs — fine for the verdict anchors, not for judging quality.)
+of the quality model. To actually measure the **judge**, each case also carries
+**labeled quality expectations** — the expected time complexity (e.g. `O(n)`,
+`O(n^2)`, `O(2^n)`) and whether the solution meets the constraints — and the
+harness reports agreement (`cx` / `meets` columns). These are reported, never
+gated, mirroring how quality never gates a verdict. Complexity is scored only
+when a real model ran (the offline heuristic reports it as unknown);
+meets-constraints is empirically grounded and scored in both modes. Cases span
+both questions (`max_subarray_sum`, `knapsack_01`) via each case's
+`question_id`, and live in [eval_cases.py](assessment_agent/eval_cases.py).
 
 ## Phase 1 vs Phase 2
 
-- **Phase 1 (now):** one hard-coded question with test cases
-  ([questions.py](assessment_agent/questions.py)).
-- **Phase 2 (planned):** the interviewer supplies the question + expected
-  input/output at runtime (same `Question` shape — the pipeline is unchanged),
-  and the agent emails the interviewer the result. Not yet built.
+- **Phase 1 (now):** a small registry of built-in questions with test cases
+  ([questions.py](assessment_agent/questions.py)), selected with `--question`.
+- **Phase 2 (in progress):** the interviewer supplies the question + expected
+  input/output at runtime as a JSON file (same `Question` shape — the pipeline
+  is unchanged), loaded with `--question-file`
+  ([loader.py](assessment_agent/loader.py), example
+  [examples/sum_of_n.json](examples/sum_of_n.json)):
+
+  ```bash
+  uv run assess path/to/submission.py --question-file examples/sum_of_n.json
+  ```
+
+  The interviewer is the oracle — the file carries the `expected` output for
+  every case, including the performance one. **Still to build:** the interviewer
+  intake and the email/notification of the result.
 
 ## Security
 

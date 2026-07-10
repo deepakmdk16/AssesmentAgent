@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .agent import AssessmentResult, assess, result_to_dict
 from .languages import LANGUAGES, detect_language
-from .questions import HARDCODED_QUESTION
+from .questions import HARDCODED_QUESTION, QUESTIONS
 
 
 def format_report(result: AssessmentResult) -> str:
@@ -87,9 +87,18 @@ def format_report(result: AssessmentResult) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Assess a candidate's coding submission (Phase 1: hard-coded question)."
+        description="Assess a candidate's coding submission against a built-in question."
     )
     parser.add_argument("submission", help="Path to the candidate's source file.")
+    parser.add_argument(
+        "--question", choices=sorted(QUESTIONS), default=HARDCODED_QUESTION.id,
+        help="Which built-in question to grade against (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--question-file",
+        help="Grade against an interviewer-supplied question JSON file (Phase 2) "
+             "instead of a built-in --question.",
+    )
     parser.add_argument(
         "--language",
         choices=sorted(LANGUAGES),
@@ -111,8 +120,14 @@ def main(argv: list[str] | None = None) -> int:
             f"could not detect language from {path.name!r}; pass --language explicitly."
         )
 
+    if args.question_file:
+        from .loader import load_question
+        question = load_question(args.question_file)
+    else:
+        question = QUESTIONS[args.question]
+
     source = path.read_text()
-    result = assess(source, language, HARDCODED_QUESTION)
+    result = assess(source, language, question)
     if args.json:
         print(json.dumps(result_to_dict(result), indent=2))
     else:
