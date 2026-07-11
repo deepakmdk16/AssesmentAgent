@@ -172,6 +172,7 @@ both questions (`max_subarray_sum`, `knapsack_01`) via each case's
   Email goes over Gmail SMTP; credentials come from the environment
   (`SMTP_USERNAME` + `SMTP_PASSWORD`, a Gmail **app password**), and the
   recipient is currently hard-coded ([mailer.py](assessment_agent/mailer.py)).
+  The `--email` path is verified — a real send over Gmail SMTP was received.
   **Still to build:** the interviewer *intake* — how the question and submission
   arrive, and an interviewer-supplied recipient (vs. the hard-coded one).
 

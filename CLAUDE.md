@@ -85,26 +85,36 @@ active, and the labeled evals matched the model on **all** anchors — verdicts
 (~$9.40 per 1,000). The judge/complexity output can now be trusted (re-run the
 smoke-test when changing model/config, per the pre-push checkpoints).
 
-**Phase 2 — loader + PDF report + email built.** `--question-file` loads an
-interviewer-supplied question; `--report <path>` renders a single PDF
-([report.py](assessment_agent/report.py): question, code, test cases, coverage,
-strengths/weaknesses); `--email` / `--email-dry-run` send it
-([mailer.py](assessment_agent/mailer.py), Gmail SMTP, creds from
-`SMTP_USERNAME`/`SMTP_PASSWORD`, recipient **hard-coded** for now). The LLM judge
+**Phase 2 — loader + PDF report + email built and VERIFIED (2026-07-11).**
+`--question-file` loads an interviewer-supplied question; `--report <path>`
+renders a single PDF ([report.py](assessment_agent/report.py): question, code,
+test cases, coverage, strengths/weaknesses); `--email` / `--email-dry-run` send
+it ([mailer.py](assessment_agent/mailer.py), Gmail SMTP, creds from
+`SMTP_USERNAME`/`SMTP_PASSWORD` — a Gmail **app password**, recipient
+**hard-coded** to `mailer.RECIPIENT`). The full `--email` path was run live: a
+real send over Gmail SMTP was **received** in the recipient inbox. The LLM judge
 is **skipped when the submission fails to execute** (compile/runtime failure) —
 `quality_engine == "skipped"`, no API call.
 
-**Open items:**
-1. **Phase 2 intake + real recipient** — how the question/submission actually
-   arrive (queue? upload? git?), and an interviewer-supplied recipient instead of
-   the hard-coded `mailer.RECIPIENT`.
+**Open items (pick up here):**
+1. **Phase 2 intake + real recipient** — the biggest remaining feature. Right
+   now the interviewer supplies the question via `--question-file` and the
+   submission via a CLI path, and the recipient is hard-coded. Still to design:
+   how question + submission actually arrive (queue? upload? git webhook?), and
+   an interviewer-supplied recipient (a `--to` flag and/or per-question field)
+   instead of the hard-coded `mailer.RECIPIENT`.
 2. **Parked cost optimizations** (see README → Future cost optimizations):
    enum/coded judge output + repo-side prose catalog; Batch API on the email
-   path (50% off); warm-cache cadence / 1-hour TTL. Revisit together, after intake.
+   path (50% off, fits async email delivery); warm-cache cadence / 1-hour TTL.
+   Revisit together, after intake.
 3. Optional: surface `required_complexity` in the judge report; composite score.
 
 **Good next tasks:** the Phase 2 intake + real recipient (#1); then the parked
 cost optimizations (#2).
+
+**Secrets note:** email uses a Gmail app password from `SMTP_USERNAME` /
+`SMTP_PASSWORD` — env only, never committed. (A prior app password was pasted
+into a chat and should be rotated; use a fresh one, set via `export`.)
 
 ## Phase 2 (loader + report + email built; intake pending)
 
