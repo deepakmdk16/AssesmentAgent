@@ -62,6 +62,16 @@ class ExecutionReport:
     def passed_count(self) -> int:
         return sum(1 for o in self.outcomes if o.passed)
 
+    @property
+    def execution_failed(self) -> bool:
+        """True when the submission could not be run meaningfully: it did not
+        compile, the toolchain was missing, or every test case errored at
+        runtime. A wrong-but-running or correct-but-slow (TLE) submission is NOT
+        a failure here — those still merit a quality report."""
+        if self.compile_error is not None or self.infra_error is not None:
+            return True
+        return bool(self.outcomes) and all(o.error is not None for o in self.outcomes)
+
     def by_category(self, category: Category) -> list[TestOutcome]:
         return [o for o in self.outcomes if o.category == category]
 

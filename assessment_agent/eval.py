@@ -16,7 +16,7 @@ from __future__ import annotations
 import sys
 
 from .agent import assess
-from .constants import OFFLINE_ENGINE
+from .constants import OFFLINE_ENGINE, SKIPPED_ENGINE
 from .eval_cases import EVAL_CASES
 from .questions import QUESTIONS
 
@@ -47,7 +47,7 @@ def main(argv: list[str] | None = None) -> int:
     for case in EVAL_CASES:
         result = assess(case.source, case.language, QUESTIONS[case.question_id])
         engine = result.quality_engine
-        real_model = engine != OFFLINE_ENGINE
+        real_model = engine not in (OFFLINE_ENGINE, SKIPPED_ENGINE)
         expected = case.expected_verdict
 
         if expected is None:

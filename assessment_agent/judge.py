@@ -46,6 +46,21 @@ class QualityAssessment(BaseModel):
     summary: str
 
 
+def skipped_assessment() -> QualityAssessment:
+    """A placeholder used when the quality judge is skipped because the
+    submission did not execute (compile/runtime failure) — no code ran, so
+    there is nothing to assess and no API call is made."""
+    return QualityAssessment(
+        criteria=[],
+        overall_score=1.0,
+        time_complexity="n/a",
+        meets_time_constraints=False,
+        strengths=[],
+        weaknesses=[],
+        summary="Quality assessment skipped: the submission did not execute (compile/runtime failure).",
+    )
+
+
 # Hand-written JSON schema for structured outputs. Kept explicit (rather than
 # generated from the Pydantic model) because structured outputs reject numeric
 # constraints like minimum/maximum; Pydantic still enforces the 1-5 bounds when

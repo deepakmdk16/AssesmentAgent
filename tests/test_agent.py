@@ -102,6 +102,20 @@ def test_correct_but_slow_is_performance_fail(monkeypatch):
     assert "tle" in result.reason.lower() or "slow" in result.reason.lower()
 
 
+def test_judge_skipped_when_code_does_not_execute():
+    # Runtime crash on every case → judge skipped entirely (no LLM call).
+    result = assess("raise ValueError('boom')\n", "python")
+    assert result.quality_engine == "skipped"
+    assert result.verdict == "FAIL"
+    assert result.usage is None
+
+
+def test_judge_runs_on_wrong_answer():
+    # A clean run with the wrong output is NOT an execution failure — still judged.
+    result = assess("print(0)\n", "python")
+    assert result.quality_engine == "offline-heuristic"
+
+
 def test_missing_toolchain_is_error_not_fail(monkeypatch):
     # Simulate the runtime being absent: verdict must be ERROR, not FAIL.
     import assessment_agent.agent as agent_mod

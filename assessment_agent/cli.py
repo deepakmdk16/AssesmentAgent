@@ -116,6 +116,22 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Emit the full report as JSON (for storing/emailing) instead of text.",
     )
+    parser.add_argument(
+        "--report",
+        metavar="PATH",
+        help="Write the assessment as a PDF report to PATH (Phase 2).",
+    )
+    parser.add_argument(
+        "--email",
+        action="store_true",
+        help="Email the PDF report to the configured recipient (Phase 2); "
+        "needs SMTP_USERNAME/SMTP_PASSWORD in the environment.",
+    )
+    parser.add_argument(
+        "--email-dry-run",
+        action="store_true",
+        help="Build the report email but do not send it (no SMTP credentials needed).",
+    )
     args = parser.parse_args(argv)
 
     path = Path(args.submission)
@@ -139,7 +155,56 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result_to_dict(result), indent=2))
     else:
         print(format_report(result))
+
+    if args.report or args.email or args.email_dry_run:
+        _emit_report(result, path.name, args, parser)
+
     return {PASS: 0, FAIL: 1, ERROR: 2}.get(result.verdict, 1)
+
+
+def _emit_report(
+    result: AssessmentResult,
+    candidate: str,
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> None:
+    """Render the PDF and optionally email it (Phase 2 side effects)."""
+    import os
+    import tempfile
+
+    from .report import build_report_pdf
+
+    if args.report:
+        report_path = Path(args.report)
+    else:
+        fd, tmp = tempfile.mkstemp(prefix="assess_", suffix=".pdf")
+        os.close(fd)
+        report_path = Path(tmp)
+
+    build_report_pdf(result, report_path, candidate=candidate)
+    if args.report:
+        print(f"Wrote PDF report: {report_path}")
+
+    if args.email or args.email_dry_run:
+        from .mailer import RECIPIENT, send_report
+
+        try:
+            msg = send_report(
+                report_path,
+                candidate=candidate,
+                verdict=result.verdict,
+                score_pct=result.score_pct,
+                dry_run=args.email_dry_run,
+            )
+        except RuntimeError as exc:
+            parser.error(str(exc))
+        if args.email_dry_run:
+            print(
+                f"[dry-run] Would email {candidate}'s report to {RECIPIENT} "
+                f"(subject: {msg['Subject']!r}); not sent."
+            )
+        else:
+            print(f"Emailed {candidate}'s report to {RECIPIENT}.")
 
 
 if __name__ == "__main__":

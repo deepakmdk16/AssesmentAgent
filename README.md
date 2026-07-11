@@ -155,8 +155,41 @@ both questions (`max_subarray_sum`, `knapsack_01`) via each case's
   ```
 
   The interviewer is the oracle — the file carries the `expected` output for
-  every case, including the performance one. **Still to build:** the interviewer
-  intake and the email/notification of the result.
+  every case, including the performance one.
+
+  The result can be rendered as a **single PDF report** and **emailed**
+  ([report.py](assessment_agent/report.py), [mailer.py](assessment_agent/mailer.py)) —
+  the report bundles the question (prompt, constraints, example), the
+  candidate's code, every test case (input/expected/actual), the coverage, and
+  the code-quality strengths/weaknesses:
+
+  ```bash
+  uv run assess submission.py --question-file q.json --report out.pdf   # write the PDF
+  uv run assess submission.py --question-file q.json --email-dry-run     # build the email, don't send
+  uv run assess submission.py --question-file q.json --email             # send it (needs SMTP creds)
+  ```
+
+  Email goes over Gmail SMTP; credentials come from the environment
+  (`SMTP_USERNAME` + `SMTP_PASSWORD`, a Gmail **app password**), and the
+  recipient is currently hard-coded ([mailer.py](assessment_agent/mailer.py)).
+  **Still to build:** the interviewer *intake* — how the question and submission
+  arrive, and an interviewer-supplied recipient (vs. the hard-coded one).
+
+### Future cost optimizations (parked)
+
+Deferred until after Phase 2, in rough priority order:
+
+- **Enum/coded judge output** — have the judge emit levels/enums per criterion
+  and render the prose from a repo-side catalog, moving verbosity from expensive
+  per-call *output* to cheap cached *input*. ~70–80% fewer output tokens (output
+  is ~73% of the per-candidate cost), at the cost of *generic* (catalog-bucketed)
+  report language.
+- **Batch API** for the email path — grading is asynchronous (results are
+  emailed), so the Message Batches API fits and gives a flat 50% discount.
+- **Warm-cache cadence / 1-hour TTL** — process candidates in bursts so the
+  cached rubric stays warm; only relevant for a trickle/interactive pattern.
+- Already shipped: **skipping the LLM judge when the submission fails to execute**
+  (a decided FAIL — no call made).
 
 ## Security
 

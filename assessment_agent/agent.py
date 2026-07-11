@@ -13,8 +13,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .constants import ERROR, FAIL, PASS, PERFORMANCE, Verdict
-from .judge import QualityAssessment, assess_quality
+from .constants import ERROR, FAIL, PASS, PERFORMANCE, SKIPPED_ENGINE, Verdict
+from .judge import QualityAssessment, assess_quality, skipped_assessment
 from .pricing import Usage
 from .questions import HARDCODED_QUESTION, Question
 from .runner import ExecutionReport, run_submission
@@ -24,6 +24,7 @@ from .runner import ExecutionReport, run_submission
 class AssessmentResult:
     question: Question
     language: str
+    source: str  # the candidate's submission, verbatim (surfaced in the report)
     execution: ExecutionReport
     quality: QualityAssessment
     quality_engine: str
@@ -60,17 +61,21 @@ def assess(
     execution = run_submission(
         source, language, question.test_cases, time_limit_s=question.time_limit_s
     )
-    execution_summary = _format_execution_summary(execution)
-    performance_ok = execution.category_passed(PERFORMANCE)
-
-    quality, engine, usage = assess_quality(
-        question_prompt=question.prompt,
-        constraints=question.constraints,
-        language=language,
-        source=source,
-        execution_summary=execution_summary,
-        performance_ok=performance_ok,
-    )
+    # Skip the LLM judge entirely when the submission did not execute — it's a
+    # decided FAIL and the quality report would add nothing (a known cost-saver).
+    if execution.execution_failed:
+        quality, engine, usage = skipped_assessment(), SKIPPED_ENGINE, None
+    else:
+        execution_summary = _format_execution_summary(execution)
+        performance_ok = execution.category_passed(PERFORMANCE)
+        quality, engine, usage = assess_quality(
+            question_prompt=question.prompt,
+            constraints=question.constraints,
+            language=language,
+            source=source,
+            execution_summary=execution_summary,
+            performance_ok=performance_ok,
+        )
 
     earned, total, pct = execution.score()
     threshold_pct = question.pass_threshold * 100.0
@@ -100,6 +105,7 @@ def assess(
     return AssessmentResult(
         question=question,
         language=language,
+        source=source,
         execution=execution,
         quality=quality,
         quality_engine=engine,

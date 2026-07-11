@@ -15,6 +15,8 @@ See [README.md](README.md) for the full flow, and
 
 - Python ≥ 3.10, managed with `uv`.
 - Run an assessment: `uv run assess <file> [--language X | --question-file <json>]`
+- Phase 2 report/email: add `--report out.pdf`, `--email-dry-run`, or `--email`
+  (email needs `SMTP_USERNAME`/`SMTP_PASSWORD` — a Gmail app password).
 - Run the eval harness: `uv run assess-eval`
 - Run tests: `uv run pytest`
 - Lint / format / types: `uv run ruff check .`, `uv run ruff format .`, `uv run mypy`.
@@ -83,18 +85,32 @@ active, and the labeled evals matched the model on **all** anchors — verdicts
 (~$9.40 per 1,000). The judge/complexity output can now be trusted (re-run the
 smoke-test when changing model/config, per the pre-push checkpoints).
 
+**Phase 2 — loader + PDF report + email built.** `--question-file` loads an
+interviewer-supplied question; `--report <path>` renders a single PDF
+([report.py](assessment_agent/report.py): question, code, test cases, coverage,
+strengths/weaknesses); `--email` / `--email-dry-run` send it
+([mailer.py](assessment_agent/mailer.py), Gmail SMTP, creds from
+`SMTP_USERNAME`/`SMTP_PASSWORD`, recipient **hard-coded** for now). The LLM judge
+is **skipped when the submission fails to execute** (compile/runtime failure) —
+`quality_engine == "skipped"`, no API call.
+
 **Open items:**
-1. **Phase 2 intake + email not built** (below).
-2. Optional: surface `required_complexity` in the judge report; add a composite
-   score (fold quality into the final % so it can affect PASS/FAIL).
+1. **Phase 2 intake + real recipient** — how the question/submission actually
+   arrive (queue? upload? git?), and an interviewer-supplied recipient instead of
+   the hard-coded `mailer.RECIPIENT`.
+2. **Parked cost optimizations** (see README → Future cost optimizations):
+   enum/coded judge output + repo-side prose catalog; Batch API on the email
+   path (50% off); warm-cache cadence / 1-hour TTL. Revisit together, after intake.
+3. Optional: surface `required_complexity` in the judge report; composite score.
 
-**Good next tasks:** build the Phase 2 interviewer intake + email/notification
-side (the biggest remaining feature); the optional scoring/complexity items (#2).
+**Good next tasks:** the Phase 2 intake + real recipient (#1); then the parked
+cost optimizations (#2).
 
-## Phase 2 (loader built; intake + email pending)
+## Phase 2 (loader + report + email built; intake pending)
 
 The interviewer supplies the question + expected I/O at runtime as a JSON file
 (`--question-file`, same `Question` shape — use the `/add-question` skill's
-recipe). The interviewer is the oracle (the file carries every `expected`).
-**Still to build:** interviewer intake (how the question/submission arrive) and
-emailing the interviewer the result.
+recipe; the interviewer is the oracle, the file carries every `expected`). The
+result renders to a PDF and emails to a hard-coded recipient. **Still to build:**
+interviewer *intake* (how the question/submission arrive) and a non-hard-coded
+recipient.

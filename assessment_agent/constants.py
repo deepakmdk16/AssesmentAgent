@@ -25,3 +25,7 @@ ERROR: Verdict = "ERROR"
 
 # Quality-judge engine label used when no ANTHROPIC_API_KEY is set.
 OFFLINE_ENGINE = "offline-heuristic"
+# Quality-judge engine label when the judge was skipped entirely because the
+# submission did not execute (compile/runtime failure) — a decided FAIL, so the
+# LLM call would add nothing. See agent.assess.
+SKIPPED_ENGINE = "skipped"
