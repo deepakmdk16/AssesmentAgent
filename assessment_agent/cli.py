@@ -96,6 +96,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("submission", help="Path to the candidate's source file.")
     parser.add_argument(
+        "--candidate",
+        metavar="NAME",
+        help="Candidate name for the report title and email subject "
+        "(defaults to the submission file's stem).",
+    )
+    parser.add_argument(
         "--question",
         choices=sorted(QUESTIONS),
         default=HARDCODED_QUESTION.id,
@@ -157,7 +163,8 @@ def main(argv: list[str] | None = None) -> int:
         print(format_report(result))
 
     if args.report or args.email or args.email_dry_run:
-        _emit_report(result, path.name, args, parser)
+        candidate = args.candidate or path.stem
+        _emit_report(result, candidate, args, parser)
 
     return {PASS: 0, FAIL: 1, ERROR: 2}.get(result.verdict, 1)
 
