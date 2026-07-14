@@ -15,8 +15,10 @@ CORRECT_PY = "import sys\nd = sys.stdin.read().split()\nn = int(d[0])\nprint(sum
 
 @pytest.fixture(autouse=True)
 def _offline(monkeypatch):
-    # Never hit the paid judge in tests.
+    # Never hit the paid judge in tests; start with auth disabled unless a test opts in.
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ASSESS_API_TOKEN", raising=False)
+    monkeypatch.delenv("CALLBACK_TOKEN", raising=False)
 
 
 @pytest.fixture
@@ -38,6 +40,25 @@ def _job(candidate="Jane Doe", **extra) -> dict:
 
 def test_health(client):
     assert client.get("/health").json() == {"status": "ok"}
+
+
+def test_auth_rejects_missing_or_wrong_token_when_configured(client, monkeypatch):
+    monkeypatch.setenv("ASSESS_API_TOKEN", "s3cret")
+    assert client.post("/assessments", json=_job()).status_code == 401
+    assert (
+        client.post("/assessments", json=_job(), headers={"X-Assess-Token": "nope"}).status_code
+        == 401
+    )
+    ok = client.post("/assessments", json=_job(), headers={"X-Assess-Token": "s3cret"})
+    assert ok.status_code == 202
+
+
+def test_callback_carries_token_when_configured(client, monkeypatch):
+    monkeypatch.setenv("CALLBACK_TOKEN", "cbtok")
+    captured: dict = {}
+    monkeypatch.setattr(api.httpx, "post", lambda url, **kw: captured.update(kw))
+    client.post("/assessments", json=_job(callback_url="https://platform/cb"))
+    assert captured["headers"].get("X-Assess-Token") == "cbtok"
 
 
 def test_accepts_job_and_completes(client):

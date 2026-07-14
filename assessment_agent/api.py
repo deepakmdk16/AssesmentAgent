@@ -17,8 +17,9 @@ Run it with:  `uv run assess-api`  (or `uvicorn assessment_agent.api:app`).
 
 The in-memory `_JOBS` registry is transient run-state for the polling fallback,
 **not** a datastore — a multi-instance deployment should rely on `callback_url`,
-not this map. Auth (a shared secret on the inbound call and the callback) is not
-yet implemented and is required before exposing this publicly.
+not this map. Auth is a shared-secret bearer token in the `X-Assess-Token` header
+(env `ASSESS_API_TOKEN` for inbound, `CALLBACK_TOKEN` for the outbound callback),
+enforced only when the env var is set — set both in production.
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from .agent import assess, result_to_dict
@@ -42,6 +43,20 @@ app = FastAPI(
     description="Stateless intake worker: grade a candidate submission against a supplied question.",
     version="0.2.0",
 )
+
+# Shared-secret auth (see also the platform's callback auth). Bearer tokens in the
+# `X-Assess-Token` header, enforced only when the corresponding env var is set —
+# unset means auth is disabled (dev/tests); production must set both.
+#   ASSESS_API_TOKEN — required on inbound POST /assessments (this worker).
+#   CALLBACK_TOKEN   — sent on the outbound callback so the platform can verify us.
+_AUTH_HEADER = "X-Assess-Token"
+
+
+def _require_token(x_assess_token: str | None = Header(default=None)) -> None:
+    expected = os.environ.get("ASSESS_API_TOKEN")
+    if expected and x_assess_token != expected:
+        raise HTTPException(status_code=401, detail=f"invalid or missing {_AUTH_HEADER}.")
+
 
 # job_id -> {"status": "accepted"|"done"|"error", "result": dict|None, "error": str|None}
 _JOBS: dict[str, dict[str, Any]] = {}
@@ -68,7 +83,7 @@ def health() -> dict:
     return {"status": "ok"}
 
 
-@app.post("/assessments", status_code=202)
+@app.post("/assessments", status_code=202, dependencies=[Depends(_require_token)])
 def create_assessment(req: AssessmentRequest, background: BackgroundTasks) -> dict:
     """Accept an assessment job; run it in the background, deliver via callback/email."""
     if req.language not in LANGUAGES:
@@ -118,8 +133,12 @@ def _run_job(job_id: str, req: AssessmentRequest, question) -> None:
 
 def _post_callback(url: str, payload: dict) -> None:
     """POST the result to the platform's callback URL (best-effort)."""
+    headers = {}
+    token = os.environ.get("CALLBACK_TOKEN")
+    if token:
+        headers[_AUTH_HEADER] = token
     try:
-        httpx.post(url, json=payload, timeout=10.0)
+        httpx.post(url, json=payload, headers=headers, timeout=10.0)
     except httpx.HTTPError:
         # A failed callback must not crash the worker; the result is still pollable.
         pass
