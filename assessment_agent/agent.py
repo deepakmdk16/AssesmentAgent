@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .adversarial import AdversarialReport, adversarial_to_dict, probe_adversarial
 from .constants import ERROR, FAIL, PASS, PERFORMANCE, SKIPPED_ENGINE, Verdict
 from .judge import QualityAssessment, assess_quality, skipped_assessment
 from .pricing import Usage
@@ -35,6 +36,11 @@ class AssessmentResult:
     points_total: float
     pass_threshold_pct: float
     usage: Usage | None = None
+    # Advisory-only adversarial probe (open item #4a). Populated when the caller
+    # opts in and the submission executed; None otherwise. It NEVER contributes to
+    # the verdict or score — enforced structurally (the probe runs after the
+    # verdict is computed from `execution` alone) and by test_adversarial.py.
+    adversarial: AdversarialReport | None = None
 
 
 def _format_execution_summary(execution: ExecutionReport) -> str:
@@ -57,6 +63,8 @@ def assess(
     source: str,
     language: str,
     question: Question = HARDCODED_QUESTION,
+    *,
+    adversarial: bool = False,
 ) -> AssessmentResult:
     execution = run_submission(
         source, language, question.test_cases, time_limit_s=question.time_limit_s
@@ -102,6 +110,14 @@ def assess(
             f"Estimated complexity: {quality.time_complexity}."
         )
 
+    # Advisory adversarial probe (opt-in). Runs only after the verdict is already
+    # decided above from `execution` alone, and only when the submission executed —
+    # so it is structurally impossible for it to alter the grade. Skipped on a
+    # non-executing submission (nothing to probe), like the quality judge.
+    adversarial_report = None
+    if adversarial and not execution.execution_failed:
+        adversarial_report = probe_adversarial(question=question, language=language, source=source)
+
     return AssessmentResult(
         question=question,
         language=language,
@@ -116,6 +132,7 @@ def assess(
         points_total=total,
         pass_threshold_pct=threshold_pct,
         usage=usage,
+        adversarial=adversarial_report,
     )
 
 
@@ -163,4 +180,6 @@ def result_to_dict(result: AssessmentResult) -> dict:
             "summary": result.quality.summary,
         },
         "judge_cost_usd": (result.usage.cost_usd if result.usage and result.usage.priced else None),
+        # Advisory only — the platform must store/display this as non-gating signal.
+        "adversarial": adversarial_to_dict(result.adversarial) if result.adversarial else None,
     }

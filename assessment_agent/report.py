@@ -383,6 +383,19 @@ def build_report_pdf(
         h2("Summary")
         body(quality.summary)
 
+    # --- 6. Adversarial probes (advisory) -------------------------------------
+    adv = result.adversarial
+    if adv is not None:
+        h2("6. Adversarial probes — advisory (does not affect the verdict)")
+        body(f"{escape(adv.summary)} &nbsp;·&nbsp; [engine: {escape(adv.engine)}]")
+        for f in adv.findings:
+            bullet(
+                f'<font color="{_STATUS_HEX.get("FAIL", "#b91c1c")}"><b>{escape(f.kind.upper())}</b></font> '
+                f"— <b>{escape(f.name)}</b>: {escape(f.rationale)}",
+                marker="•",
+            )
+            code_box(f"input: {_clip(f.stdin)}\n{_clip(f.detail)}")
+
     SimpleDocTemplate(
         str(out_path),
         pagesize=LETTER,
