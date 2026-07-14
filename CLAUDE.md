@@ -153,12 +153,23 @@ email fallback recipient is env-configurable via `ASSESS_DEFAULT_RECIPIENT`
 address only the ultimate fallback. Verified: 67 passed / 2 skipped, ruff + mypy
 clean (offline path only — judge untouched, no live-key smoke needed).
 
+**Hardening — Batch B done (2026-07-14).** (B1) candidate execution now gets
+best-effort memory + output ceilings ([runner.py](assessment_agent/runner.py)
+`_apply_limits`: `RLIMIT_AS` / `RLIMIT_FSIZE` via `preexec_fn`, tunable with
+`ASSESS_MEM_LIMIT_MB` / `ASSESS_OUTPUT_LIMIT_MB`) so a submission can't OOM the
+worker by allocating or printing without bound — stdout/stderr go to temp files
+so the cap bites and a runaway is killed (SIGXFSZ) as a failing case, not a
+worker crash; `RLIMIT_AS` is best-effort (unenforced on macOS), and the
+missing-runtime→ERROR distinction is preserved (direct exec, not a shell). (B2)
+`POST /assessments` validates `callback_url` ([api.py](assessment_agent/api.py)
+`_validate_callback_url`): http(s) only, and literal loopback/private/link-local/
+reserved IPs (incl. the cloud metadata address) and `localhost` are rejected —
+no DNS, so it's offline-safe; name-based rebinding still needs egress controls.
+Verified: 75 passed / 2 skipped, ruff + mypy clean, and a real CLI run (PASS,
+100%, timing intact). Residual sandboxing gap unchanged — still run under a real
+container sandbox in production.
+
 **Open items (pick up here):**
-0. **Hardening Batch B (next)** — (B1) cap candidate execution memory/output in
-   [runner.py](assessment_agent/runner.py) (the timeout bounds time, not RAM or
-   stdout size); (B2) validate `callback_url` scheme/host in
-   [api.py](assessment_agent/api.py) to close the SSRF vector (block non-http(s)
-   and localhost/private ranges). Batch A already shipped.
 1. **Multiple examples** (deferred) — `Question`/loader/report still hold a
    single example; the authoring vision wants a list. Extend when the authoring
    UI (a separate concern, not in this repo) needs it.

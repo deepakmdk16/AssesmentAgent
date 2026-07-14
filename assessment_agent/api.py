@@ -24,6 +24,7 @@ enforced only when the env var is set — set both in production.
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import secrets
 import tempfile
@@ -31,6 +32,7 @@ import uuid
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
@@ -52,6 +54,32 @@ app = FastAPI(
 #   ASSESS_API_TOKEN — required on inbound POST /assessments (this worker).
 #   CALLBACK_TOKEN   — sent on the outbound callback so the platform can verify us.
 _AUTH_HEADER = "X-Assess-Token"
+
+
+def _validate_callback_url(url: str) -> None:
+    """Reject a callback that would make the worker hit itself or the internal
+    network (SSRF). Guards the scheme and literal internal IPs (loopback, private,
+    link-local — including the cloud metadata address — and reserved). No DNS is
+    done, so a hostname that *resolves* to an internal IP isn't caught here; that
+    residual (rebinding) needs network egress controls, noted as future work."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(
+            status_code=400, detail=f"callback_url must be http(s), got {parsed.scheme!r}."
+        )
+    host = parsed.hostname
+    if not host:
+        raise HTTPException(status_code=400, detail="callback_url has no host.")
+    if host.lower() == "localhost":
+        raise HTTPException(status_code=400, detail="callback_url must not target localhost.")
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return  # a hostname (not a literal IP) — allowed
+    if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved or ip.is_unspecified:
+        raise HTTPException(
+            status_code=400, detail=f"callback_url must not target an internal address ({host})."
+        )
 
 
 def _require_token(x_assess_token: str | None = Header(default=None)) -> None:
@@ -106,6 +134,9 @@ def create_assessment(req: AssessmentRequest, background: BackgroundTasks) -> di
         question = question_from_dict(req.question)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"invalid question: {exc}") from None
+
+    if req.callback_url:
+        _validate_callback_url(req.callback_url)
 
     job_id = uuid.uuid4().hex
     _JOBS[job_id] = {"status": "accepted", "result": None, "error": None}

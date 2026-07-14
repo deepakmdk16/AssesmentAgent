@@ -11,9 +11,13 @@ isolation so CPU contention can't inflate the timing that drives the TLE gate
 (see `run_submission`). Output comparison — and therefore the verdict — is
 unaffected by parallelism.
 
-Security note: this executes untrusted candidate code with only a timeout for
-protection. For production use, run this inside a locked-down sandbox
-(container with no network, dropped capabilities, resource limits).
+Security note: this executes untrusted candidate code. Beyond the per-run timeout,
+each child gets best-effort memory (`RLIMIT_AS`) and output (`RLIMIT_FSIZE`)
+ceilings so a submission can't OOM the worker by allocating or printing without
+bound (see `_apply_limits`; tune with `ASSESS_MEM_LIMIT_MB` / `ASSESS_OUTPUT_LIMIT_MB`).
+These are defense-in-depth, not a sandbox — `RLIMIT_AS` in particular is not
+honored on every platform (e.g. macOS). For production, still run this inside a
+locked-down sandbox (container with no network, dropped capabilities, cgroups).
 """
 
 from __future__ import annotations
@@ -26,6 +30,11 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+try:
+    import resource  # POSIX-only; used to cap child memory/output.
+except ImportError:  # pragma: no cover - non-POSIX (e.g. Windows)
+    resource = None  # type: ignore[assignment]
 
 from .constants import CORRECTNESS, PERFORMANCE, Category
 from .languages import LANGUAGES
@@ -99,44 +108,89 @@ def _normalize(text: str) -> str:
     return "\n".join(line.rstrip() for line in text.strip().splitlines())
 
 
+# Best-effort per-child resource ceilings (0 disables). Read at import; override
+# with env vars. RLIMIT_AS caps address space (memory), RLIMIT_FSIZE caps bytes
+# written to stdout/stderr (which we redirect to files, so this bites).
+_MEM_LIMIT_BYTES = int(os.environ.get("ASSESS_MEM_LIMIT_MB", "512")) * 1024 * 1024
+_OUTPUT_LIMIT_BYTES = int(os.environ.get("ASSESS_OUTPUT_LIMIT_MB", "64")) * 1024 * 1024
+
+
+def _apply_limits() -> None:
+    """Set memory/output ceilings on the child just before exec (POSIX only).
+
+    Best-effort: a platform that rejects a given limit (RLIMIT_AS is not honored
+    on macOS) degrades to unlimited for that resource rather than failing the run.
+    Kept minimal because it runs post-fork in a possibly-multithreaded parent.
+    """
+    for res_id, cap in (
+        (resource.RLIMIT_AS, _MEM_LIMIT_BYTES),
+        (resource.RLIMIT_FSIZE, _OUTPUT_LIMIT_BYTES),
+    ):
+        if cap > 0:
+            try:
+                resource.setrlimit(res_id, (cap, cap))
+            except (ValueError, OSError):
+                pass
+
+
+# preexec_fn (not a shell wrapper) so subprocess still raises FileNotFoundError
+# when the runtime is missing — that distinction drives the ERROR (inconclusive)
+# verdict. None on non-POSIX, where these limits aren't available.
+_PREEXEC = _apply_limits if resource is not None else None
+
+
 def _run_case(run_cmd: list[str], workdir: Path, tc: TestCase, limit: float) -> TestOutcome | str:
     """Run one test case. Returns a TestOutcome, or an infra-error string when the
     runtime itself is missing (inconclusive — the caller must not treat it as a
-    candidate failure)."""
-    start = time.perf_counter()
-    try:
-        proc = subprocess.run(
-            run_cmd,
-            cwd=workdir,
-            input=tc.stdin,
-            capture_output=True,
-            text=True,
-            timeout=limit,
-        )
-    except FileNotFoundError as exc:
-        return f"runtime not installed: {exc}"
-    except subprocess.TimeoutExpired:
-        return TestOutcome(
-            tc.name,
-            tc.stdin,
-            tc.expected,
-            "",
-            False,
-            f"time limit exceeded (> {limit:.1f}s)",
-            duration_s=limit,
-            timed_out=True,
-            category=tc.category,
-            weight=tc.weight,
-        )
+    candidate failure).
 
-    duration = time.perf_counter() - start
-    error = proc.stderr.strip() if proc.returncode != 0 else None
-    passed = error is None and _normalize(proc.stdout) == _normalize(tc.expected)
+    stdout/stderr go to temp files (not pipes) so RLIMIT_FSIZE caps a runaway
+    print without the parent buffering it in memory; a child that exceeds the cap
+    is killed (SIGXFSZ) and surfaces as a failing case, never as a worker OOM.
+    """
+    start = time.perf_counter()
+    with tempfile.TemporaryFile() as out_f, tempfile.TemporaryFile() as err_f:
+        try:
+            proc = subprocess.run(
+                run_cmd,
+                cwd=workdir,
+                input=tc.stdin.encode(),
+                stdout=out_f,
+                stderr=err_f,
+                timeout=limit,
+                preexec_fn=_PREEXEC,
+            )
+        except FileNotFoundError as exc:
+            return f"runtime not installed: {exc}"
+        except subprocess.TimeoutExpired:
+            return TestOutcome(
+                tc.name,
+                tc.stdin,
+                tc.expected,
+                "",
+                False,
+                f"time limit exceeded (> {limit:.1f}s)",
+                duration_s=limit,
+                timed_out=True,
+                category=tc.category,
+                weight=tc.weight,
+            )
+        duration = time.perf_counter() - start
+        out_f.seek(0)
+        err_f.seek(0)
+        stdout = out_f.read().decode(errors="replace")
+        stderr = err_f.read().decode(errors="replace")
+
+    error = stderr.strip() if proc.returncode != 0 else None
+    if proc.returncode != 0 and not error:
+        # A signal (e.g. SIGXFSZ from the output cap, or OOM) leaves no stderr.
+        error = f"runtime error (exit code {proc.returncode})"
+    passed = error is None and _normalize(stdout) == _normalize(tc.expected)
     return TestOutcome(
         tc.name,
         tc.stdin,
         tc.expected,
-        proc.stdout.strip(),
+        stdout.strip(),
         passed,
         error,
         duration_s=duration,
