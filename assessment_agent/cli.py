@@ -198,9 +198,9 @@ def _emit_report(
         print(f"Wrote PDF report: {report_path}")
 
     if args.email or args.email_dry_run:
-        from .mailer import RECIPIENT, send_report
+        from .mailer import default_recipient, send_report
 
-        recipient = args.to or RECIPIENT
+        recipient = args.to or default_recipient()
         try:
             msg = send_report(
                 report_path,

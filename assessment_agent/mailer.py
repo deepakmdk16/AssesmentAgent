@@ -17,10 +17,17 @@ import smtplib
 from email.message import EmailMessage
 from pathlib import Path
 
-# Fallback recipient when the interviewer doesn't pass one (CLI `--to`).
+# Ultimate fallback recipient when neither a caller-supplied recipient nor the
+# `ASSESS_DEFAULT_RECIPIENT` env override is set. Prefer the env var in any real
+# deployment so reports don't default to this address.
 RECIPIENT = "deepakmdk16@gmail.com"
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 587
+
+
+def default_recipient() -> str:
+    """Resolve the fallback recipient at call time: env override, else RECIPIENT."""
+    return os.environ.get("ASSESS_DEFAULT_RECIPIENT") or RECIPIENT
 
 
 def build_email(
@@ -30,9 +37,10 @@ def build_email(
     verdict: str,
     score_pct: float,
     sender: str,
-    recipient: str = RECIPIENT,
+    recipient: str | None = None,
 ) -> EmailMessage:
     """Build the MIME message with the PDF attached (no network I/O)."""
+    recipient = recipient or default_recipient()
     pdf_path = Path(pdf_path)
     msg = EmailMessage()
     msg["Subject"] = f"Assessment report — {candidate} — {verdict} ({score_pct:.0f}%)"
@@ -63,7 +71,7 @@ def send_report(
     candidate: str,
     verdict: str,
     score_pct: float,
-    recipient: str = RECIPIENT,
+    recipient: str | None = None,
     dry_run: bool = False,
 ) -> EmailMessage:
     """Build and (unless dry_run) send the report email. Returns the message.

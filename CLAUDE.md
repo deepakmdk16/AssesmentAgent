@@ -58,6 +58,11 @@ Before committing or pushing:
    heuristic only exercises the pipeline, not the real model call.
 4. `uv run assess-eval` with a real key — the deterministic anchors
    (strong→PASS, buggy→FAIL) must hold before trusting a model/config.
+5. **Open-items checkpoint** — before committing, confirm the "Status & next
+   steps" block below still reflects reality: any item this change completes is
+   moved out of **Open items**, and any new follow-up it creates is added there.
+   This repo tracks status in CLAUDE.md, so a commit that shifts the roadmap must
+   update it in the same commit — treat a stale open-items list as a failed gate.
 
 ## Guardrails specific to this repo
 
@@ -140,6 +145,34 @@ callback receiver — the platform side matches this exact contract). Verified w
 a joint two-service smoke test: authenticated trigger→assess→callback→PASS, and
 both sides return 401 to unauthenticated calls. HMAC body-signing is the noted
 future hardening step.
+
+**Hardening — Batch A done (2026-07-14).** Four production-hardening fixes found
+in a codebase gap-scan (not on the old open-items list): (A1) the Phase-2 loader
+now rejects unknown question-JSON keys (`extra="forbid"` on the specs) so an
+authoring typo is a loud error, not a silently-dropped field; (A2) the inbound
+auth token is compared with `secrets.compare_digest` (constant-time); (A3) the
+in-memory `_JOBS` polling map is bounded (`OrderedDict`, FIFO eviction, cap
+`ASSESS_MAX_JOBS`, default 1000) so a long-lived worker can't leak; (A4) the
+email fallback recipient is env-configurable via `ASSESS_DEFAULT_RECIPIENT`
+([mailer.py](assessment_agent/mailer.py) `default_recipient()`), the hard-coded
+address only the ultimate fallback. Verified: 67 passed / 2 skipped, ruff + mypy
+clean (offline path only — judge untouched, no live-key smoke needed).
+
+**Hardening — Batch B done (2026-07-14).** (B1) candidate execution now gets
+best-effort memory + output ceilings ([runner.py](assessment_agent/runner.py)
+`_apply_limits`: `RLIMIT_AS` / `RLIMIT_FSIZE` via `preexec_fn`, tunable with
+`ASSESS_MEM_LIMIT_MB` / `ASSESS_OUTPUT_LIMIT_MB`) so a submission can't OOM the
+worker by allocating or printing without bound — stdout/stderr go to temp files
+so the cap bites and a runaway is killed (SIGXFSZ) as a failing case, not a
+worker crash; `RLIMIT_AS` is best-effort (unenforced on macOS), and the
+missing-runtime→ERROR distinction is preserved (direct exec, not a shell). (B2)
+`POST /assessments` validates `callback_url` ([api.py](assessment_agent/api.py)
+`_validate_callback_url`): http(s) only, and literal loopback/private/link-local/
+reserved IPs (incl. the cloud metadata address) and `localhost` are rejected —
+no DNS, so it's offline-safe; name-based rebinding still needs egress controls.
+Verified: 75 passed / 2 skipped, ruff + mypy clean, and a real CLI run (PASS,
+100%, timing intact). Residual sandboxing gap unchanged — still run under a real
+container sandbox in production.
 
 **Open items (pick up here):**
 1. **Multiple examples** (deferred) — `Question`/loader/report still hold a

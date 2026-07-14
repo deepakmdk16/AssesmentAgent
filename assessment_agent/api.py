@@ -24,11 +24,15 @@ enforced only when the env var is set — set both in production.
 
 from __future__ import annotations
 
+import ipaddress
 import os
+import secrets
 import tempfile
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
@@ -52,14 +56,47 @@ app = FastAPI(
 _AUTH_HEADER = "X-Assess-Token"
 
 
+def _validate_callback_url(url: str) -> None:
+    """Reject a callback that would make the worker hit itself or the internal
+    network (SSRF). Guards the scheme and literal internal IPs (loopback, private,
+    link-local — including the cloud metadata address — and reserved). No DNS is
+    done, so a hostname that *resolves* to an internal IP isn't caught here; that
+    residual (rebinding) needs network egress controls, noted as future work."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(
+            status_code=400, detail=f"callback_url must be http(s), got {parsed.scheme!r}."
+        )
+    host = parsed.hostname
+    if not host:
+        raise HTTPException(status_code=400, detail="callback_url has no host.")
+    if host.lower() == "localhost":
+        raise HTTPException(status_code=400, detail="callback_url must not target localhost.")
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return  # a hostname (not a literal IP) — allowed
+    if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved or ip.is_unspecified:
+        raise HTTPException(
+            status_code=400, detail=f"callback_url must not target an internal address ({host})."
+        )
+
+
 def _require_token(x_assess_token: str | None = Header(default=None)) -> None:
     expected = os.environ.get("ASSESS_API_TOKEN")
-    if expected and x_assess_token != expected:
+    # Constant-time compare so the shared secret can't be recovered by timing the
+    # response. `compare_digest` needs two strings, so coalesce a missing header.
+    if expected and not secrets.compare_digest(x_assess_token or "", expected):
         raise HTTPException(status_code=401, detail=f"invalid or missing {_AUTH_HEADER}.")
 
 
 # job_id -> {"status": "accepted"|"done"|"error", "result": dict|None, "error": str|None}
-_JOBS: dict[str, dict[str, Any]] = {}
+# This is the polling fallback's transient run-state, not a datastore, so it is
+# bounded: once it holds _MAX_JOBS entries, inserting a new one evicts the oldest
+# (FIFO). Otherwise a long-lived worker would accumulate every job forever.
+# Callers that need durable results should use `callback_url`, not this map.
+_MAX_JOBS = int(os.environ.get("ASSESS_MAX_JOBS", "1000"))
+_JOBS: OrderedDict[str, dict[str, Any]] = OrderedDict()
 
 
 class AssessmentRequest(BaseModel):
@@ -98,8 +135,13 @@ def create_assessment(req: AssessmentRequest, background: BackgroundTasks) -> di
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"invalid question: {exc}") from None
 
+    if req.callback_url:
+        _validate_callback_url(req.callback_url)
+
     job_id = uuid.uuid4().hex
     _JOBS[job_id] = {"status": "accepted", "result": None, "error": None}
+    while len(_JOBS) > _MAX_JOBS:
+        _JOBS.popitem(last=False)  # evict oldest
     background.add_task(_run_job, job_id, req, question)
     return {"job_id": job_id, "status": "accepted"}
 

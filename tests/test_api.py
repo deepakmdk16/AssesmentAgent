@@ -100,6 +100,40 @@ def test_malformed_question_is_400(client):
     assert "invalid question" in resp.json()["detail"]
 
 
+def test_jobs_map_is_bounded(client, monkeypatch):
+    # The polling map is transient run-state, not a datastore: it must not grow
+    # without bound. Once over the cap, the oldest job is evicted (FIFO).
+    monkeypatch.setattr(api, "_MAX_JOBS", 3)
+    api._JOBS.clear()
+    ids = [client.post("/assessments", json=_job()).json()["job_id"] for _ in range(5)]
+    assert len(api._JOBS) <= 3
+    assert client.get(f"/assessments/{ids[0]}").status_code == 404  # oldest evicted
+    assert client.get(f"/assessments/{ids[-1]}").status_code == 200  # newest retained
+
+
+@pytest.mark.parametrize(
+    "bad_url",
+    [
+        "http://127.0.0.1/cb",
+        "http://169.254.169.254/latest/meta-data/",  # cloud metadata endpoint
+        "http://10.0.0.5/cb",
+        "http://localhost/cb",
+        "file:///etc/passwd",
+        "ftp://example.com/cb",
+    ],
+)
+def test_callback_url_ssrf_is_rejected(client, bad_url):
+    assert client.post("/assessments", json=_job(callback_url=bad_url)).status_code == 400
+
+
+def test_public_callback_url_is_accepted(client, monkeypatch):
+    # A public IP (or a plain hostname) is fine — only internal targets are blocked.
+    # Stub the outbound POST so the accepted job doesn't hit the real network.
+    monkeypatch.setattr(api.httpx, "post", lambda *a, **k: None)
+    r = client.post("/assessments", json=_job(callback_url="http://93.184.216.34/cb"))
+    assert r.status_code == 202
+
+
 def test_unknown_job_is_404(client):
     assert client.get("/assessments/deadbeef").status_code == 404
 

@@ -1,5 +1,6 @@
 import pytest
 
+from assessment_agent import runner
 from assessment_agent.constants import CORRECTNESS, PERFORMANCE
 from assessment_agent.questions import TestCase
 from assessment_agent.runner import _normalize, run_submission
@@ -34,6 +35,17 @@ def test_runtime_error_is_captured():
 def test_unsupported_language_raises():
     with pytest.raises(ValueError):
         run_submission("x", "cobol", ())
+
+
+@pytest.mark.skipif(runner.resource is None, reason="POSIX resource limits unavailable")
+def test_output_cap_fails_a_runaway_print(monkeypatch):
+    # A submission that prints far past the output ceiling is killed (SIGXFSZ)
+    # and surfaces as a failing case — never a worker OOM or an infra error.
+    monkeypatch.setattr(runner, "_OUTPUT_LIMIT_BYTES", 4096)
+    report = run_submission("print('x' * 1_000_000)\n", "python", (tc("", "irrelevant"),))
+    assert report.infra_error is None
+    assert report.outcomes[0].passed is False
+    assert report.outcomes[0].error
 
 
 def test_normalize_ignores_trailing_whitespace():
