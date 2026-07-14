@@ -58,6 +58,11 @@ Before committing or pushing:
    heuristic only exercises the pipeline, not the real model call.
 4. `uv run assess-eval` with a real key — the deterministic anchors
    (strong→PASS, buggy→FAIL) must hold before trusting a model/config.
+5. **Open-items checkpoint** — before committing, confirm the "Status & next
+   steps" block below still reflects reality: any item this change completes is
+   moved out of **Open items**, and any new follow-up it creates is added there.
+   This repo tracks status in CLAUDE.md, so a commit that shifts the roadmap must
+   update it in the same commit — treat a stale open-items list as a failed gate.
 
 ## Guardrails specific to this repo
 
