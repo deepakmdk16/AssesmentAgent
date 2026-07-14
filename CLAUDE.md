@@ -19,6 +19,13 @@ See [README.md](README.md) for the full flow, and
   (email needs `SMTP_USERNAME`/`SMTP_PASSWORD` — a Gmail app password). Use
   `--candidate NAME` to set the report title / email subject (defaults to the
   file stem).
+- Run the intake API: `uv run assess-api` (FastAPI). It's a **stateless async
+  worker**: `POST /assessments` with the full question **inline** plus the code —
+  `{question:{...}, code, language, candidate?, callback_url?, email_to?}` — gets
+  a `202 {job_id}`; the work runs in the background and the full result is POSTed
+  to `callback_url` and/or emailed. Poll `GET /assessments/{job_id}` as a
+  fallback; `GET /health`. No question storage lives here — the platform owns it
+  and sends it inline.
 - Run the eval harness: `uv run assess-eval`
 - Run tests: `uv run pytest`
 - Lint / format / types: `uv run ruff check .`, `uv run ruff format .`, `uv run mypy`.
@@ -100,21 +107,42 @@ note below. The LLM judge
 is **skipped when the submission fails to execute** (compile/runtime failure) —
 `quality_engine == "skipped"`, no API call.
 
+**Phase 2 — stateless async intake worker (2026-07-14).** The agent is a
+**stateless worker**: it owns no question storage and no database. A platform
+posts a job to `POST /assessments` ([api.py](assessment_agent/api.py), FastAPI,
+`uv run assess-api`) with the **full question inline** + the candidate's code;
+the agent returns `202 {job_id}`, runs the existing `assess` pipeline in a
+background task, and delivers the result by POSTing it to `callback_url` and/or
+emailing the PDF (`email_to`). `GET /assessments/{job_id}` is a polling fallback
+backed by an in-memory job map (transient run-state, not a datastore). The
+inline question is validated by `loader.question_from_dict`. `--to` on the CLI
+supplies the report recipient. **Design decisions (2026-07-14):** question
+source = inline push (platform owns storage; no DB here); invocation = async +
+callback; verdict stays deterministic (the "master" is scoring code, never an
+LLM — Sonnet only writes the non-gating quality summary). Verified: full suite
+green (ruff + mypy clean, 60 passed / 2 skipped) and a live end-to-end async
+smoke test — POST → 202 → background assess → `GET` done (PASS) → callback
+received the full result. The earlier ID-keyed file store (`store.py`,
+`questions_store/`) was **removed** — inline push makes it obsolete.
+
 **Open items (pick up here):**
-1. **Phase 2 intake + real recipient** — the biggest remaining feature. Right
-   now the interviewer supplies the question via `--question-file` and the
-   submission via a CLI path, and the recipient is hard-coded. Still to design:
-   how question + submission actually arrive (queue? upload? git webhook?), and
-   an interviewer-supplied recipient (a `--to` flag and/or per-question field)
-   instead of the hard-coded `mailer.RECIPIENT`.
-2. **Parked cost optimizations** (see README → Future cost optimizations):
+1. **Parallel test-case execution** — run a question's N cases concurrently in
+   `runner.py` (today they run sequentially). A real throughput win; keep it a
+   focused, independently-tested change. The verdict must stay deterministic.
+2. **API auth** — `POST /assessments` and the outbound `callback_url` POST are
+   unauthenticated; add a shared secret / signature on both before exposing
+   publicly. Result durability across instances is the platform's job (it holds
+   the callback), not this worker's.
+3. **Multiple examples** (deferred) — `Question`/loader/report still hold a
+   single example; the authoring vision wants a list. Extend when the authoring
+   UI (a separate concern, not in this repo) needs it.
+4. **Parked cost optimizations** (see README → Future cost optimizations):
    enum/coded judge output + repo-side prose catalog; Batch API on the email
    path (50% off, fits async email delivery); warm-cache cadence / 1-hour TTL.
    Revisit together, after intake.
-3. Optional: surface `required_complexity` in the judge report; composite score.
+5. Optional: surface `required_complexity` in the judge report; composite score.
 
-**Good next tasks:** the Phase 2 intake + real recipient (#1); then the parked
-cost optimizations (#2).
+**Good next tasks:** parallel test-case execution (#1); then API auth (#2).
 
 **Secrets note:** email uses a Gmail app password from `SMTP_USERNAME` /
 `SMTP_PASSWORD` — env only, never committed. The previously-exposed app password
@@ -132,11 +160,14 @@ zebra striping). The candidate name is now interviewer-supplied via
 `--candidate NAME` (falls back to the file stem), so the report title and email
 subject no longer show the raw filename.
 
-## Phase 2 (loader + report + email built; intake pending)
+## Phase 2 (delivery paths)
 
-The interviewer supplies the question + expected I/O at runtime as a JSON file
-(`--question-file`, same `Question` shape — use the `/add-question` skill's
-recipe; the interviewer is the oracle, the file carries every `expected`). The
-result renders to a PDF and emails to a hard-coded recipient. **Still to build:**
-interviewer *intake* (how the question/submission arrive) and a non-hard-coded
-recipient.
+Two ways a question + submission reach the agent, both using the same `Question`
+shape (the interviewer is the oracle — the question carries every `expected`;
+use the `/add-question` skill's recipe to author one):
+
+- **CLI**: `--question-file <json>` + a submission path (local/dev, and the eval
+  harness). `--to` sets the report recipient, `--report`/`--email` the outputs.
+- **API** (`assess-api`): a platform posts the question **inline** + the code to
+  `POST /assessments` and gets the result via `callback_url` / `email_to`. The
+  agent is stateless — the platform owns question storage.
