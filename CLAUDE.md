@@ -125,11 +125,15 @@ smoke test — POST → 202 → background assess → `GET` done (PASS) → call
 received the full result. The earlier ID-keyed file store (`store.py`,
 `questions_store/`) was **removed** — inline push makes it obsolete.
 
+**Parallel execution — done (2026-07-14).** `runner.py` runs correctness cases
+concurrently (bounded `ThreadPoolExecutor`) and performance cases isolated in a
+second phase, so CPU contention can't inflate the timing that drives the TLE
+gate — a fast solution can't be falsely timed out under load. Outcome order is
+preserved; the verdict is unaffected by parallelism. Verified: 62 passed, and a
+real CLI run (4/4 correctness + 1/1 performance → PASS).
+
 **Open items (pick up here):**
-1. **Parallel test-case execution** — run a question's N cases concurrently in
-   `runner.py` (today they run sequentially). A real throughput win; keep it a
-   focused, independently-tested change. The verdict must stay deterministic.
-2. **API auth** — `POST /assessments` and the outbound `callback_url` POST are
+1. **API auth** — `POST /assessments` and the outbound `callback_url` POST are
    unauthenticated; add a shared secret / signature on both before exposing
    publicly. Result durability across instances is the platform's job (it holds
    the callback), not this worker's.
@@ -142,7 +146,13 @@ received the full result. The earlier ID-keyed file store (`store.py`,
    Revisit together, after intake.
 5. Optional: surface `required_complexity` in the judge report; composite score.
 
-**Good next tasks:** parallel test-case execution (#1); then API auth (#2).
+**Good next tasks:** API auth (#1); then multiple examples (#3).
+
+**Companion repo:** the stateful **Assessment Platform** (question/answer/result
+storage + trigger + callback receiver) lives as a **separate repo** at
+`../assessment-platform` (decision 2026-07-14). The agent stays a stateless
+worker and must not absorb question storage. The platform triggers the agent and
+persists what the callback returns; it never computes/overrides the grade.
 
 **Secrets note:** email uses a Gmail app password from `SMTP_USERNAME` /
 `SMTP_PASSWORD` — env only, never committed. The previously-exposed app password
