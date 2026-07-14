@@ -200,7 +200,7 @@ same open item is **not** done (see #3 below).
    deterministic verdict; candidate-feedback agent once the platform can surface
    it. Not yet chosen.
 
-**Good next tasks:** multiple examples (#1), or start the agentic work (#4).
+**Good next tasks:** **#4a adversarial test-gen (advisory) is the chosen next feature** (decision 2026-07-14) — build it in a fresh session; #1/#2/#3 are deferred.
 
 **Companion repo:** the stateful **Assessment Platform** (question/answer/result
 storage + trigger + callback receiver) lives as a **separate repo** at
