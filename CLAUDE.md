@@ -141,7 +141,24 @@ a joint two-service smoke test: authenticated trigger→assess→callback→PASS
 both sides return 401 to unauthenticated calls. HMAC body-signing is the noted
 future hardening step.
 
+**Hardening — Batch A done (2026-07-14).** Four production-hardening fixes found
+in a codebase gap-scan (not on the old open-items list): (A1) the Phase-2 loader
+now rejects unknown question-JSON keys (`extra="forbid"` on the specs) so an
+authoring typo is a loud error, not a silently-dropped field; (A2) the inbound
+auth token is compared with `secrets.compare_digest` (constant-time); (A3) the
+in-memory `_JOBS` polling map is bounded (`OrderedDict`, FIFO eviction, cap
+`ASSESS_MAX_JOBS`, default 1000) so a long-lived worker can't leak; (A4) the
+email fallback recipient is env-configurable via `ASSESS_DEFAULT_RECIPIENT`
+([mailer.py](assessment_agent/mailer.py) `default_recipient()`), the hard-coded
+address only the ultimate fallback. Verified: 67 passed / 2 skipped, ruff + mypy
+clean (offline path only — judge untouched, no live-key smoke needed).
+
 **Open items (pick up here):**
+0. **Hardening Batch B (next)** — (B1) cap candidate execution memory/output in
+   [runner.py](assessment_agent/runner.py) (the timeout bounds time, not RAM or
+   stdout size); (B2) validate `callback_url` scheme/host in
+   [api.py](assessment_agent/api.py) to close the SSRF vector (block non-http(s)
+   and localhost/private ranges). Batch A already shipped.
 1. **Multiple examples** (deferred) — `Question`/loader/report still hold a
    single example; the authoring vision wants a list. Extend when the authoring
    UI (a separate concern, not in this repo) needs it.

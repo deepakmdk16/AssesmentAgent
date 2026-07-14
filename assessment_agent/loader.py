@@ -17,13 +17,17 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .constants import CORRECTNESS, Category
 from .questions import Question, TestCase, validate_question
 
 
 class _TestCaseSpec(BaseModel):
+    # Reject unknown keys so a typo (e.g. "stdout" for "expected") is a loud
+    # error, not a silently-dropped field that defaults to something wrong.
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     stdin: str
     expected: str
@@ -32,11 +36,15 @@ class _TestCaseSpec(BaseModel):
 
 
 class _ExampleSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     input: str
     output: str
 
 
 class _QuestionSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     id: str
     title: str
     prompt: str

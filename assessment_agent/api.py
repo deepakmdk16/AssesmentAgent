@@ -25,8 +25,10 @@ enforced only when the env var is set — set both in production.
 from __future__ import annotations
 
 import os
+import secrets
 import tempfile
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -54,12 +56,19 @@ _AUTH_HEADER = "X-Assess-Token"
 
 def _require_token(x_assess_token: str | None = Header(default=None)) -> None:
     expected = os.environ.get("ASSESS_API_TOKEN")
-    if expected and x_assess_token != expected:
+    # Constant-time compare so the shared secret can't be recovered by timing the
+    # response. `compare_digest` needs two strings, so coalesce a missing header.
+    if expected and not secrets.compare_digest(x_assess_token or "", expected):
         raise HTTPException(status_code=401, detail=f"invalid or missing {_AUTH_HEADER}.")
 
 
 # job_id -> {"status": "accepted"|"done"|"error", "result": dict|None, "error": str|None}
-_JOBS: dict[str, dict[str, Any]] = {}
+# This is the polling fallback's transient run-state, not a datastore, so it is
+# bounded: once it holds _MAX_JOBS entries, inserting a new one evicts the oldest
+# (FIFO). Otherwise a long-lived worker would accumulate every job forever.
+# Callers that need durable results should use `callback_url`, not this map.
+_MAX_JOBS = int(os.environ.get("ASSESS_MAX_JOBS", "1000"))
+_JOBS: OrderedDict[str, dict[str, Any]] = OrderedDict()
 
 
 class AssessmentRequest(BaseModel):
@@ -100,6 +109,8 @@ def create_assessment(req: AssessmentRequest, background: BackgroundTasks) -> di
 
     job_id = uuid.uuid4().hex
     _JOBS[job_id] = {"status": "accepted", "result": None, "error": None}
+    while len(_JOBS) > _MAX_JOBS:
+        _JOBS.popitem(last=False)  # evict oldest
     background.add_task(_run_job, job_id, req, question)
     return {"job_id": job_id, "status": "accepted"}
 

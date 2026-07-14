@@ -100,6 +100,17 @@ def test_malformed_question_is_400(client):
     assert "invalid question" in resp.json()["detail"]
 
 
+def test_jobs_map_is_bounded(client, monkeypatch):
+    # The polling map is transient run-state, not a datastore: it must not grow
+    # without bound. Once over the cap, the oldest job is evicted (FIFO).
+    monkeypatch.setattr(api, "_MAX_JOBS", 3)
+    api._JOBS.clear()
+    ids = [client.post("/assessments", json=_job()).json()["job_id"] for _ in range(5)]
+    assert len(api._JOBS) <= 3
+    assert client.get(f"/assessments/{ids[0]}").status_code == 404  # oldest evicted
+    assert client.get(f"/assessments/{ids[-1]}").status_code == 200  # newest retained
+
+
 def test_unknown_job_is_404(client):
     assert client.get("/assessments/deadbeef").status_code == 404
 

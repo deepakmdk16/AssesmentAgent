@@ -78,3 +78,15 @@ def test_bad_schema_is_rejected():
     del spec["prompt"]  # required field
     with pytest.raises(ValidationError):
         question_from_dict(spec)
+
+
+def test_unknown_field_is_rejected():
+    # A typo'd key must be a loud error, not a silently-dropped field.
+    spec = _minimal_spec()
+    spec["threshold"] = 0.5  # typo for pass_threshold
+    with pytest.raises(ValidationError):
+        question_from_dict(spec)
+    spec = _minimal_spec()
+    spec["test_cases"][0]["stdout"] = "1"  # typo for expected
+    with pytest.raises(ValidationError):
+        question_from_dict(spec)

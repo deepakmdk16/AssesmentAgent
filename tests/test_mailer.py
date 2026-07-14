@@ -40,6 +40,18 @@ def test_dry_run_builds_but_does_not_need_credentials(tmp_path, monkeypatch):
     assert msg["To"] == RECIPIENT  # built and returned, nothing sent
 
 
+def test_default_recipient_honors_env_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("ASSESS_DEFAULT_RECIPIENT", "team@example.com")
+    msg = build_email(
+        _fake_pdf(tmp_path),
+        candidate="a.py",
+        verdict="PASS",
+        score_pct=100.0,
+        sender="me@example.com",
+    )
+    assert msg["To"] == "team@example.com"
+
+
 def test_real_send_without_credentials_raises(tmp_path, monkeypatch):
     monkeypatch.delenv("SMTP_USERNAME", raising=False)
     monkeypatch.delenv("SMTP_PASSWORD", raising=False)
