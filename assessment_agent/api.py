@@ -113,6 +113,11 @@ class AssessmentRequest(BaseModel):
     email_to: str | None = Field(
         default=None, description="If set, the PDF report is emailed to this address."
     )
+    adversarial: bool = Field(
+        default=False,
+        description="Run advisory adversarial edge-case probes (needs ANTHROPIC_API_KEY "
+        "on the worker). Reported separately; never affects the score or verdict.",
+    )
 
 
 @app.get("/health")
@@ -158,7 +163,7 @@ def get_assessment(job_id: str) -> dict:
 def _run_job(job_id: str, req: AssessmentRequest, question) -> None:
     """Background worker: assess, then deliver the result via callback and/or email."""
     try:
-        result = assess(req.code, req.language, question)
+        result = assess(req.code, req.language, question, adversarial=req.adversarial)
         payload = result_to_dict(result)
         payload["candidate"] = req.candidate
         payload["job_id"] = job_id

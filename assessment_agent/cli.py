@@ -62,7 +62,9 @@ def format_report(result: AssessmentResult) -> str:
     meets = "yes" if qa.meets_time_constraints else "NO"
     lines.append(f"     time complexity: {qa.time_complexity}  (meets constraints: {meets})")
     if q.required_complexity:
-        lines.append(f"     required complexity: {q.required_complexity}  (advisory — does not gate the verdict)")
+        lines.append(
+            f"     required complexity: {q.required_complexity}  (advisory — does not gate the verdict)"
+        )
     for c in qa.criteria:
         lines.append(f"     {c.name:<12} {c.score}/5 — {c.comment}")
     lines.append(f"     {'overall':<12} {qa.overall_score}/5")
@@ -78,6 +80,18 @@ def format_report(result: AssessmentResult) -> str:
     lines.append("\n3. VERDICT")
     lines.append(f"   >>> {result.verdict} <<<")
     lines.append(f"   {result.reason}")
+
+    adv = result.adversarial
+    if adv is not None:
+        lines.append(
+            f"\nADVERSARIAL PROBES  (advisory — does not affect the verdict; engine: {adv.engine})"
+        )
+        lines.append(f"   {adv.summary}")
+        for f in adv.findings:
+            shown = f.stdin if len(f.stdin) <= 200 else f.stdin[:200] + " …[truncated]"
+            lines.append(f"     [{f.kind.upper()}] {f.name} — {f.rationale}")
+            lines.append(f"            input: {shown!r}")
+            lines.append(f"            {f.detail}")
 
     if result.usage is not None:
         u = result.usage
@@ -118,6 +132,13 @@ def main(argv: list[str] | None = None) -> int:
         "--language",
         choices=sorted(LANGUAGES),
         help="Override language detection (otherwise inferred from file extension).",
+    )
+    parser.add_argument(
+        "--adversarial",
+        action="store_true",
+        help="Run advisory adversarial edge-case probes (Claude generates inputs, "
+        "the deterministic runner executes them). Needs ANTHROPIC_API_KEY; reported "
+        "separately and never affects the score or verdict.",
     )
     parser.add_argument(
         "--json",
@@ -163,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
         question = QUESTIONS[args.question]
 
     source = path.read_text()
-    result = assess(source, language, question)
+    result = assess(source, language, question, adversarial=args.adversarial)
     if args.json:
         print(json.dumps(result_to_dict(result), indent=2))
     else:

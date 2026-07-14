@@ -185,6 +185,47 @@ skipped, ruff + mypy clean, and a real CLI + PDF run on `examples/sum_of_n.json`
 (judge untouched) — no live-key re-smoke needed. Composite-score idea from the
 same open item is **not** done (see #3 below).
 
+**Adversarial test-gen (advisory) — #4a built (2026-07-14).** The first genuinely
+*agentic* feature: opt-in (`--adversarial` CLI flag / `adversarial:true` API
+field), Claude generates edge-case **inputs** ([adversarial.py](assessment_agent/adversarial.py),
+prompt module [prompts/adversarial_gen.md](assessment_agent/prompts/adversarial_gen.md),
+structured output + prompt-cached instruction prefix, shares the judge's
+`ASSESSMENT_MODEL`/thinking/effort env). The **model never executes** — generated
+inputs run through the same deterministic [runner.py](assessment_agent/runner.py)
+in a **separate** `run_submission` call (PERFORMANCE-category, so timing is
+isolated), whose outcomes never touch the graded `ExecutionReport`. Only
+**oracle-independent Tier-1** failures are reported — a **crash** (non-zero
+exit/exception) or **timeout** on a *valid* input; correctness on generated
+inputs is not judged (the interviewer is the only oracle). Surfaced as its own
+advisory section in the CLI text report, the PDF (§6), and `result_to_dict`
+(`"adversarial"` block) — clearly labelled "does not affect the verdict". The
+probe runs only when a key is set **and** the submission executed (skipped on
+compile/runtime failure, like the judge); no key → an honest empty offline
+report (no meaningful heuristic exists — generation needs the model). **The
+verdict/score never see it — enforced structurally** (the probe runs after the
+verdict is computed from `execution` alone) **and by test**
+([tests/test_adversarial.py](tests/test_adversarial.py): a crash-heavy report
+leaves verdict/score/points/reason byte-identical to a no-probe run). Cost: one
+extra Claude call per assessment when enabled (~+$0.005–0.01/candidate, on top
+of the ~$0.009 judge call).
+Verified: **85 passed / 2 skipped, ruff + mypy clean**, and — critically — a
+**live-key smoke test on `claude-sonnet-4-6` (2026-07-14)**: a correct Kadane's
+submission → probe ran, 8 compact cases generated, none crashed/timed out; an
+O(N²) submission → graded **FAIL (40%, TLE)** with the adversarial finding
+**not** altering the verdict. Two bugs the smoke caught and fixed: (1) the
+generator was emitting constraint-maximum inputs and truncating past `max_tokens`
+→ the prompt now forbids huge inputs (the grader already has the perf case) and
+generation failures now **degrade gracefully** (an advisory probe must never
+abort `assess` — pinned by `test_assess_survives_generation_failure`); (2) a
+false-positive `[CRASH]` from a model-generated **malformed** input (declared
+N≠actual count) → the prompt now hard-requires count==values and small sizes, so
+crashes are reported only on *valid* inputs. **Re-smoke after the tightening
+confirmed it**: the same O(N²) submission now reports "8 probed, none crashed or
+timed out" (the false crash is gone) while the graded verdict stays FAIL (40%,
+TLE). **Residual limitation:** the probe's oracle is the model, so a stray
+malformed input could in principle still yield an advisory false-positive —
+acceptable because it's clearly labelled and never gates.
+
 **Open items (pick up here):**
 1. **Multiple examples** (deferred) — `Question`/loader/report still hold a
    single example; the authoring vision wants a list. Extend when the authoring
@@ -195,12 +236,14 @@ same open item is **not** done (see #3 below).
    Revisit together, after intake.
 3. Optional: composite score (weighted verdict-score + quality). The
    `required_complexity`-in-report half of this item is **done** (see above).
-4. **Agentic direction (open discussion)** — adversarial test-gen (advisory) is
-   the recommended place to add genuine agentic AI without touching the
-   deterministic verdict; candidate-feedback agent once the platform can surface
-   it. Not yet chosen.
+4. **Agentic direction** — adversarial test-gen (advisory) **#4a is built and
+   live-smoke-verified** (see the status block above). The candidate-feedback
+   agent (once the platform can surface it) remains the open, not-yet-chosen next
+   agentic step.
 
-**Good next tasks:** **#4a adversarial test-gen (advisory) is the chosen next feature** (decision 2026-07-14) — build it in a fresh session; #1/#2/#3 are deferred.
+**Good next tasks:** #4a adversarial test-gen is done (2026-07-14, live-verified
+incl. a confirming re-smoke of the tightened prompt). Next candidates: #4
+candidate-feedback agent, or the deferred #1/#2/#3.
 
 **Companion repo:** the stateful **Assessment Platform** (question/answer/result
 storage + trigger + callback receiver) lives as a **separate repo** at
