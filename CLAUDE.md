@@ -174,6 +174,17 @@ Verified: 75 passed / 2 skipped, ruff + mypy clean, and a real CLI run (PASS,
 100%, timing intact). Residual sandboxing gap unchanged — still run under a real
 container sandbox in production.
 
+**required_complexity in the report — done (2026-07-14).** The question's
+advisory `required_complexity` is now surfaced next to the judge's measured
+Big-O in both the CLI text report ([cli.py](assessment_agent/cli.py)) and the
+PDF ([report.py](assessment_agent/report.py) §5), shown only when the question
+sets it and clearly labelled "advisory — does not gate the verdict" (the verdict
+stays score-based; complexity is reported, never gating). Verified: 75 passed / 2
+skipped, ruff + mypy clean, and a real CLI + PDF run on `examples/sum_of_n.json`
+(required `O(N)` rendered alongside the measured complexity). Offline-only change
+(judge untouched) — no live-key re-smoke needed. Composite-score idea from the
+same open item is **not** done (see #3 below).
+
 **Open items (pick up here):**
 1. **Multiple examples** (deferred) — `Question`/loader/report still hold a
    single example; the authoring vision wants a list. Extend when the authoring
@@ -182,7 +193,8 @@ container sandbox in production.
    enum/coded judge output + repo-side prose catalog; Batch API on the email
    path (50% off, fits async email delivery); warm-cache cadence / 1-hour TTL.
    Revisit together, after intake.
-3. Optional: surface `required_complexity` in the judge report; composite score.
+3. Optional: composite score (weighted verdict-score + quality). The
+   `required_complexity`-in-report half of this item is **done** (see above).
 4. **Agentic direction (open discussion)** — adversarial test-gen (advisory) is
    the recommended place to add genuine agentic AI without touching the
    deterministic verdict; candidate-feedback agent once the platform can surface

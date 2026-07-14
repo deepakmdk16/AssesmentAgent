@@ -336,9 +336,15 @@ def build_report_pdf(
         body("Not assessed — the submission did not execute (compile/runtime failure).")
     else:
         meets = "yes" if quality.meets_time_constraints else "no"
+        required = (
+            f"Required: <b>{escape(q.required_complexity)}</b> (advisory) &nbsp;·&nbsp; "
+            if q.required_complexity
+            else ""
+        )
         body(
             f"Estimated time complexity: <b>{escape(quality.time_complexity)}</b> "
             f"(meets constraints: {meets}) &nbsp;·&nbsp; "
+            f"{required}"
             f"Overall: <b>{quality.overall_score:g}/5</b> &nbsp;·&nbsp; "
             f"[engine: {escape(result.quality_engine)}]"
         )
