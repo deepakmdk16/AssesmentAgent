@@ -61,6 +61,8 @@ def format_report(result: AssessmentResult) -> str:
     lines.append(f"\n2. CODE QUALITY  (engine: {result.quality_engine})")
     meets = "yes" if qa.meets_time_constraints else "NO"
     lines.append(f"     time complexity: {qa.time_complexity}  (meets constraints: {meets})")
+    if q.required_complexity:
+        lines.append(f"     required complexity: {q.required_complexity}  (advisory — does not gate the verdict)")
     for c in qa.criteria:
         lines.append(f"     {c.name:<12} {c.score}/5 — {c.comment}")
     lines.append(f"     {'overall':<12} {qa.overall_score}/5")
