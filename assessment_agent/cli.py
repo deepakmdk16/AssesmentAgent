@@ -96,6 +96,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("submission", help="Path to the candidate's source file.")
     parser.add_argument(
+        "--candidate",
+        metavar="NAME",
+        help="Candidate name for the report title and email subject "
+        "(defaults to the submission file's stem).",
+    )
+    parser.add_argument(
         "--question",
         choices=sorted(QUESTIONS),
         default=HARDCODED_QUESTION.id,
@@ -132,6 +138,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Build the report email but do not send it (no SMTP credentials needed).",
     )
+    parser.add_argument(
+        "--to",
+        metavar="EMAIL",
+        help="Recipient for the emailed report (Phase 2); defaults to the built-in recipient.",
+    )
     args = parser.parse_args(argv)
 
     path = Path(args.submission)
@@ -157,7 +168,8 @@ def main(argv: list[str] | None = None) -> int:
         print(format_report(result))
 
     if args.report or args.email or args.email_dry_run:
-        _emit_report(result, path.name, args, parser)
+        candidate = args.candidate or path.stem
+        _emit_report(result, candidate, args, parser)
 
     return {PASS: 0, FAIL: 1, ERROR: 2}.get(result.verdict, 1)
 
@@ -188,23 +200,25 @@ def _emit_report(
     if args.email or args.email_dry_run:
         from .mailer import RECIPIENT, send_report
 
+        recipient = args.to or RECIPIENT
         try:
             msg = send_report(
                 report_path,
                 candidate=candidate,
                 verdict=result.verdict,
                 score_pct=result.score_pct,
+                recipient=recipient,
                 dry_run=args.email_dry_run,
             )
         except RuntimeError as exc:
             parser.error(str(exc))
         if args.email_dry_run:
             print(
-                f"[dry-run] Would email {candidate}'s report to {RECIPIENT} "
+                f"[dry-run] Would email {candidate}'s report to {recipient} "
                 f"(subject: {msg['Subject']!r}); not sent."
             )
         else:
-            print(f"Emailed {candidate}'s report to {RECIPIENT}.")
+            print(f"Emailed {candidate}'s report to {recipient}.")
 
 
 if __name__ == "__main__":

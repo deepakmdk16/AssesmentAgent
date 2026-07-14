@@ -3,7 +3,8 @@
 The report is sent as a PDF attachment over Gmail SMTP. Credentials come from
 the environment only (`SMTP_USERNAME` + `SMTP_PASSWORD`, where the password is a
 Gmail *app password* — plain-password SMTP is blocked under 2FA). The recipient
-is hard-coded for now so results land in a known inbox during bring-up.
+is interviewer-supplied (CLI `--to`); `RECIPIENT` is the fallback default when
+none is given.
 
 `dry_run=True` builds the message but sends nothing — use it to inspect the
 email without SMTP credentials or an outbound send.
@@ -16,7 +17,7 @@ import smtplib
 from email.message import EmailMessage
 from pathlib import Path
 
-# Hard-coded during bring-up (Phase 2); becomes interviewer-supplied later.
+# Fallback recipient when the interviewer doesn't pass one (CLI `--to`).
 RECIPIENT = "deepakmdk16@gmail.com"
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 587

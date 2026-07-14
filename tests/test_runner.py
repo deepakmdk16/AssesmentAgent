@@ -1,7 +1,10 @@
 import pytest
 
+from assessment_agent.constants import CORRECTNESS, PERFORMANCE
 from assessment_agent.questions import TestCase
 from assessment_agent.runner import _normalize, run_submission
+
+ECHO = "import sys\nprint(sys.stdin.read().strip())\n"
 
 
 def tc(stdin: str, expected: str) -> TestCase:
@@ -45,3 +48,25 @@ def test_time_limit_exceeded_is_flagged():
     assert outcome.timed_out
     assert not outcome.passed
     assert "time limit" in (outcome.error or "").lower()
+
+
+def test_outcomes_preserve_input_order_under_parallelism():
+    # Correctness cases run concurrently and can finish out of order; the report
+    # must still list them in the original input order.
+    cases = tuple(TestCase(f"c{i}", f"{i}\n", str(i)) for i in range(8))
+    report = run_submission(ECHO, "python", cases)
+    assert [o.name for o in report.outcomes] == [f"c{i}" for i in range(8)]
+    assert all(o.passed for o in report.outcomes)
+
+
+def test_mixed_correctness_and_performance_all_run_in_order():
+    # Performance cases run isolated in a second phase; positions are preserved.
+    cases = (
+        TestCase("corr1", "1\n", "1", CORRECTNESS),
+        TestCase("perf", "9\n", "9", PERFORMANCE),
+        TestCase("corr2", "2\n", "2", CORRECTNESS),
+    )
+    report = run_submission(ECHO, "python", cases)
+    assert [o.name for o in report.outcomes] == ["corr1", "perf", "corr2"]
+    assert [o.category for o in report.outcomes] == [CORRECTNESS, PERFORMANCE, CORRECTNESS]
+    assert all(o.passed for o in report.outcomes)

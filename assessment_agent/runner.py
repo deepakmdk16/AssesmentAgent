@@ -1,10 +1,15 @@
 """Execute a candidate submission against a question's test cases.
 
-Each submission is compiled (if needed) and run once per test case in an
-isolated temp directory, with the test input fed on stdin and stdout compared
-against the expected output. Each run is bounded by a per-language time limit,
-so a correct-but-too-slow solution registers as a time-limit-exceeded (TLE)
-failure rather than a wrong answer.
+Each submission is compiled (if needed) and run once per test case in a shared
+temp directory, with the test input fed on stdin and stdout compared against the
+expected output. Each run is bounded by a per-language time limit, so a
+correct-but-too-slow solution registers as a time-limit-exceeded (TLE) failure
+rather than a wrong answer.
+
+Correctness cases run concurrently for throughput; performance cases run in
+isolation so CPU contention can't inflate the timing that drives the TLE gate
+(see `run_submission`). Output comparison — and therefore the verdict — is
+unaffected by parallelism.
 
 Security note: this executes untrusted candidate code with only a timeout for
 protection. For production use, run this inside a locked-down sandbox
@@ -13,6 +18,8 @@ protection. For production use, run this inside a locked-down sandbox
 
 from __future__ import annotations
 
+import concurrent.futures
+import os
 import shutil
 import subprocess
 import tempfile
@@ -20,7 +27,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from .constants import CORRECTNESS, Category
+from .constants import CORRECTNESS, PERFORMANCE, Category
 from .languages import LANGUAGES
 from .questions import TestCase
 
@@ -92,6 +99,52 @@ def _normalize(text: str) -> str:
     return "\n".join(line.rstrip() for line in text.strip().splitlines())
 
 
+def _run_case(run_cmd: list[str], workdir: Path, tc: TestCase, limit: float) -> TestOutcome | str:
+    """Run one test case. Returns a TestOutcome, or an infra-error string when the
+    runtime itself is missing (inconclusive — the caller must not treat it as a
+    candidate failure)."""
+    start = time.perf_counter()
+    try:
+        proc = subprocess.run(
+            run_cmd,
+            cwd=workdir,
+            input=tc.stdin,
+            capture_output=True,
+            text=True,
+            timeout=limit,
+        )
+    except FileNotFoundError as exc:
+        return f"runtime not installed: {exc}"
+    except subprocess.TimeoutExpired:
+        return TestOutcome(
+            tc.name,
+            tc.stdin,
+            tc.expected,
+            "",
+            False,
+            f"time limit exceeded (> {limit:.1f}s)",
+            duration_s=limit,
+            timed_out=True,
+            category=tc.category,
+            weight=tc.weight,
+        )
+
+    duration = time.perf_counter() - start
+    error = proc.stderr.strip() if proc.returncode != 0 else None
+    passed = error is None and _normalize(proc.stdout) == _normalize(tc.expected)
+    return TestOutcome(
+        tc.name,
+        tc.stdin,
+        tc.expected,
+        proc.stdout.strip(),
+        passed,
+        error,
+        duration_s=duration,
+        category=tc.category,
+        weight=tc.weight,
+    )
+
+
 def run_submission(
     source: str,
     language: str,
@@ -135,57 +188,40 @@ def run_submission(
             if proc.returncode != 0:
                 return ExecutionReport(language, proc.stderr.strip() or "compilation failed", [])
 
-        outcomes: list[TestOutcome] = []
-        for tc in test_cases:
-            start = time.perf_counter()
-            try:
-                proc = subprocess.run(
-                    run_cmd,
-                    cwd=workdir,
-                    input=tc.stdin,
-                    capture_output=True,
-                    text=True,
-                    timeout=limit,
-                )
-            except FileNotFoundError as exc:
-                # Runtime missing — inconclusive, not a candidate failure. Stop early.
-                return ExecutionReport(
-                    language, None, [], infra_error=f"runtime not installed: {exc}"
-                )
-            except subprocess.TimeoutExpired:
-                outcomes.append(
-                    TestOutcome(
-                        tc.name,
-                        tc.stdin,
-                        tc.expected,
-                        "",
-                        False,
-                        f"time limit exceeded (> {limit:.1f}s)",
-                        duration_s=limit,
-                        timed_out=True,
-                        category=tc.category,
-                        weight=tc.weight,
-                    )
-                )
-                continue
+        # Execution is split by category so parallelism never corrupts the grade:
+        #   - correctness cases run concurrently (bounded) — their inputs are small
+        #     and their timing is not gated, so CPU contention is harmless;
+        #   - performance cases run isolated, one at a time with nothing else
+        #     running, so their measured duration (which drives the TLE gate) is
+        #     trustworthy and a fast solution can't be falsely timed out under load.
+        # They run in separate phases, so the two never overlap. The workdir is
+        # shared, so a candidate that writes fixed-name files could race during the
+        # correctness phase — acceptable under the existing untrusted-code caveat.
+        outcomes: list[TestOutcome | None] = [None] * len(test_cases)
+        corr_idx = [i for i, tc in enumerate(test_cases) if tc.category != PERFORMANCE]
+        perf_idx = [i for i, tc in enumerate(test_cases) if tc.category == PERFORMANCE]
 
-            duration = time.perf_counter() - start
-            error = proc.stderr.strip() if proc.returncode != 0 else None
-            passed = error is None and _normalize(proc.stdout) == _normalize(tc.expected)
-            outcomes.append(
-                TestOutcome(
-                    tc.name,
-                    tc.stdin,
-                    tc.expected,
-                    proc.stdout.strip(),
-                    passed,
-                    error,
-                    duration_s=duration,
-                    category=tc.category,
-                    weight=tc.weight,
-                )
-            )
+        # Phase 1: correctness cases in parallel (bounded to avoid heavy contention).
+        if corr_idx:
+            max_workers = min(len(corr_idx), os.cpu_count() or 1)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {
+                    pool.submit(_run_case, run_cmd, workdir, test_cases[i], limit): i
+                    for i in corr_idx
+                }
+                for future in concurrent.futures.as_completed(futures):
+                    result = future.result()
+                    if isinstance(result, str):  # runtime missing — inconclusive
+                        return ExecutionReport(language, None, [], infra_error=result)
+                    outcomes[futures[future]] = result
 
-        return ExecutionReport(language, None, outcomes)
+        # Phase 2: performance cases isolated, for clean (uncontended) timing.
+        for i in perf_idx:
+            result = _run_case(run_cmd, workdir, test_cases[i], limit)
+            if isinstance(result, str):
+                return ExecutionReport(language, None, [], infra_error=result)
+            outcomes[i] = result
+
+        return ExecutionReport(language, None, [o for o in outcomes if o is not None])
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
