@@ -132,21 +132,30 @@ gate — a fast solution can't be falsely timed out under load. Outcome order is
 preserved; the verdict is unaffected by parallelism. Verified: 62 passed, and a
 real CLI run (4/4 correctness + 1/1 performance → PASS).
 
+**API auth — done (2026-07-14).** Shared-secret bearer token in the
+`X-Assess-Token` header, enforced only when the env var is set (backward-
+compatible). `ASSESS_API_TOKEN` guards the agent's inbound `POST /assessments`;
+`CALLBACK_TOKEN` is sent on the outbound callback (and required by the platform's
+callback receiver — the platform side matches this exact contract). Verified with
+a joint two-service smoke test: authenticated trigger→assess→callback→PASS, and
+both sides return 401 to unauthenticated calls. HMAC body-signing is the noted
+future hardening step.
+
 **Open items (pick up here):**
-1. **API auth** — `POST /assessments` and the outbound `callback_url` POST are
-   unauthenticated; add a shared secret / signature on both before exposing
-   publicly. Result durability across instances is the platform's job (it holds
-   the callback), not this worker's.
-3. **Multiple examples** (deferred) — `Question`/loader/report still hold a
+1. **Multiple examples** (deferred) — `Question`/loader/report still hold a
    single example; the authoring vision wants a list. Extend when the authoring
    UI (a separate concern, not in this repo) needs it.
-4. **Parked cost optimizations** (see README → Future cost optimizations):
+2. **Parked cost optimizations** (see README → Future cost optimizations):
    enum/coded judge output + repo-side prose catalog; Batch API on the email
    path (50% off, fits async email delivery); warm-cache cadence / 1-hour TTL.
    Revisit together, after intake.
-5. Optional: surface `required_complexity` in the judge report; composite score.
+3. Optional: surface `required_complexity` in the judge report; composite score.
+4. **Agentic direction (open discussion)** — adversarial test-gen (advisory) is
+   the recommended place to add genuine agentic AI without touching the
+   deterministic verdict; candidate-feedback agent once the platform can surface
+   it. Not yet chosen.
 
-**Good next tasks:** API auth (#1); then multiple examples (#3).
+**Good next tasks:** multiple examples (#1), or start the agentic work (#4).
 
 **Companion repo:** the stateful **Assessment Platform** (question/answer/result
 storage + trigger + callback receiver) lives as a **separate repo** at
