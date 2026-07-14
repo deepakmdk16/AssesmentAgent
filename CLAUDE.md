@@ -238,12 +238,36 @@ acceptable because it's clearly labelled and never gates.
    `required_complexity`-in-report half of this item is **done** (see above).
 4. **Agentic direction** — adversarial test-gen (advisory) **#4a is built and
    live-smoke-verified** (see the status block above). The candidate-feedback
-   agent (once the platform can surface it) remains the open, not-yet-chosen next
-   agentic step.
+   agent (once the platform can surface it) remains open and not-yet-chosen.
+5. **Question-authoring assistant (chosen next cross-repo project, 2026-07-14).**
+   An AI assistant that drafts a full question from an interviewer's brief:
+   prompt, constraints, a **reference (oracle) solution**, and a **validated**
+   correctness+performance test suite. **Decision: the Agent owns the whole
+   draft.** Because a test case's `expected` is only trustworthy when produced by
+   *executing* the reference solution (see how [questions.py](assessment_agent/questions.py)
+   labels cases via an oracle, and the `/add-question` recipe), and execution +
+   `validate_question` + the oracle-vs-naive differential all live here, the
+   authoring call belongs in the agent — **not** the platform (which has no
+   executor and must never grow one). Shape: a new **stateless** endpoint
+   `POST /questions/draft` ([api.py](assessment_agent/api.py)) — NL brief + hints
+   (language, difficulty, target complexity) in → a fully-formed, **validated**
+   `Question` JSON + advisory warnings out. It stores nothing (the platform stores
+   on human approval). LLM drafting mirrors [judge.py](assessment_agent/judge.py)
+   /[adversarial.py](assessment_agent/adversarial.py) (structured output, prompt
+   cache, offline fallback); the reference solution runs through
+   [runner.py](assessment_agent/runner.py) to fill `expected` — the model never
+   executes. **New cross-repo contract** (a 3rd, alongside the trigger + callback):
+   request/response above, auth reuses `ASSESS_API_TOKEN`, and the platform must
+   **not** store an unvalidated question. **Sequencing:** Phase A = this agent
+   endpoint first (self-contained, testable, live-smoke), then Phase B = the
+   platform's add-question "draft with AI" UX consumes it. See the platform repo's
+   open item #4 for the platform half.
 
 **Good next tasks:** #4a adversarial test-gen is done (2026-07-14, live-verified
-incl. a confirming re-smoke of the tightened prompt). Next candidates: #4
-candidate-feedback agent, or the deferred #1/#2/#3.
+incl. a confirming re-smoke of the tightened prompt). **Next: #5 question-
+authoring assistant, Phase A (the `POST /questions/draft` endpoint)** — build in a
+fresh session; get a design sketch approved first, as with #4a. Deferred: #4
+candidate-feedback, #1/#2/#3.
 
 **Companion repo:** the stateful **Assessment Platform** (question/answer/result
 storage + trigger + callback receiver) lives as a **separate repo** at
