@@ -39,6 +39,8 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from .agent import assess, result_to_dict
+from .authoring import draft_question, draft_to_dict
+from .constants import OFFLINE_ENGINE
 from .languages import LANGUAGES
 from .loader import question_from_dict
 
@@ -120,9 +122,53 @@ class AssessmentRequest(BaseModel):
     )
 
 
+class DraftRequest(BaseModel):
+    brief: str = Field(min_length=1, description="Natural-language description of the problem.")
+    language: str = Field(
+        description=f"Language for the reference solution; one of {sorted(LANGUAGES)}."
+    )
+    difficulty: str | None = Field(
+        default=None, description="Optional difficulty hint (e.g. 'medium')."
+    )
+    target_complexity: str | None = Field(
+        default=None,
+        description="Optional target Big-O for the intended solution (e.g. 'O(N log N)').",
+    )
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+@app.post("/questions/draft", dependencies=[Depends(_require_token)])
+def draft(req: DraftRequest) -> dict:
+    """Draft a validated Question from a brief. Stateless: stores nothing — the
+    platform persists the result on human approval. Claude drafts the prose,
+    constraints, a reference (oracle) solution, and the test inputs; the agent
+    executes the reference through the deterministic runner to fill each case's
+    expected output, then validates the assembled question."""
+    if req.language not in LANGUAGES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unsupported language {req.language!r}; expected one of {sorted(LANGUAGES)}.",
+        )
+    result = draft_question(
+        req.brief,
+        language=req.language,
+        difficulty=req.difficulty,
+        target_complexity=req.target_complexity,
+    )
+    if result.engine == OFFLINE_ENGINE:
+        raise HTTPException(
+            status_code=503,
+            detail="drafting requires a live model (set ANTHROPIC_API_KEY on the worker).",
+        )
+    payload = draft_to_dict(result)
+    if result.question is None:
+        # Draft ran but produced nothing usable — surface the warnings, don't 200.
+        raise HTTPException(status_code=422, detail=payload)
+    return payload
 
 
 @app.post("/assessments", status_code=202, dependencies=[Depends(_require_token)])

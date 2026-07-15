@@ -262,12 +262,29 @@ acceptable because it's clearly labelled and never gates.
    endpoint first (self-contained, testable, live-smoke), then Phase B = the
    platform's add-question "draft with AI" UX consumes it. See the platform repo's
    open item #4 for the platform half.
+   **Phase A — DONE & live-verified (2026-07-15).** `POST /questions/draft`
+   ([api.py](assessment_agent/api.py)) + [authoring.py](assessment_agent/authoring.py)
+   + prompt module [prompts/question_draft.md](assessment_agent/prompts/question_draft.md).
+   The model drafts prose/constraints/a reference (oracle) solution/test **inputs**
+   + a performance **generator** program; the agent runs the reference through
+   [runner.py](assessment_agent/runner.py) to fill every `expected` (a case whose
+   reference run crashes/times out is dropped with a warning), synthesises the perf
+   case from the generator's output, and validates via `question_from_dict` before
+   returning. Stateless (stores nothing); offline → 503; unusable draft → 422.
+   **The worked example is oracle-derived** from the first surviving correctness
+   case (its executed output), appended to the prompt — the model is forbidden from
+   hand-computing an example or leaking reasoning into the `prompt` (a live smoke
+   caught it doing exactly that: chain-of-thought + discarded wrong examples in the
+   prompt; fixed by removing the model's `example_*` fields and the prompt-module
+   rule). Verified: **95 passed / 2 skipped, ruff + mypy clean**, and two live
+   smokes on `claude-sonnet-4-6` (drafted a valid question, 11 cases, reference
+   graded PASS 100%; clean prompt after the fix; ~$0.017–0.028/draft). **Phase B
+   (platform repo) is the remaining half.**
 
-**Good next tasks:** #4a adversarial test-gen is done (2026-07-14, live-verified
-incl. a confirming re-smoke of the tightened prompt). **Next: #5 question-
-authoring assistant, Phase A (the `POST /questions/draft` endpoint)** — build in a
-fresh session; get a design sketch approved first, as with #4a. Deferred: #4
-candidate-feedback, #1/#2/#3.
+**Good next tasks:** #4a done; **#5 Phase A (`POST /questions/draft`) done &
+live-verified (2026-07-15)**. **Next: #5 Phase B** — the platform's add-question
+"draft with AI" UX consuming the endpoint (in `../assessment-platform`, its open
+item #4). Deferred: #4 candidate-feedback, #1/#2/#3.
 
 **Companion repo:** the stateful **Assessment Platform** (question/answer/result
 storage + trigger + callback receiver) lives as a **separate repo** at
