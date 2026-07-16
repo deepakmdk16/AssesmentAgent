@@ -77,6 +77,32 @@ Before committing or pushing:
 
 ## Status & next steps
 
+**Slice 11 Phase A done (candidate run endpoints, 2026-07-16).** Two synchronous,
+**non-grading** execution endpoints backing the platform's candidate editor. Neither
+calls an LLM, produces a verdict, or records a job — the boundary holds: grading is
+still only `POST /assessments`.
+- **`POST /run`** — execute code once against caller-supplied stdin; returns
+  `stdout`/`stderr`/`duration_s`/`timed_out`/`compile_error`/`infra_error`. Backs the
+  candidate's "Run" button (custom-input box, LeetCode-style — *not* an interactive
+  terminal; a real PTY would need a persistent container per session).
+- **`POST /run/tests`** — run the question's suite and return **pass/fail per case
+  only** (`name`/`category`/`status`/`duration_s`). Deliberately returns **no**
+  input/expected/actual: the platform redacts too, but keeping the answer key off this
+  path entirely means a bug there can't leak it. `/assessments` still returns full
+  detail for the interviewer's report card.
+- Both reuse `runner.run_once` / `run_submission`, so compilation, the language-scaled
+  time limit and the child resource caps behave exactly as in a graded run.
+- Verified: pytest 115 (+15 new, executing real code), ruff+mypy clean.
+
+**Draft robustness (Slice 12 agent half, 2026-07-16).** `draft_question` now retries
+while the draft comes back unusable (`ASSESS_DRAFT_ATTEMPTS`, default 2). Drafting is
+stochastic, so a reference that won't compile is usually a one-off and asking again
+tends to work; a genuinely ambiguous brief still fails every attempt and the warnings
+say why. Also **fixed the C++ `.hpp` failure at its source**: the drafting prompt now
+states the hard single-file rule (requirement 5) — the runner compiles exactly one
+translation unit (`g++ main.cpp`), so a reference split across a header could never
+build. Nothing enforced that before.
+
 **Current status:** multi-language runner, weighted scoring with a per-question
 pass threshold (default 90%), performance/TLE gate sized to the constraints, LLM
 quality judge with offline fallback and Big-O reporting, `--json` report export,

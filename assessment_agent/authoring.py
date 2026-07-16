@@ -25,6 +25,7 @@ no meaningful offline heuristic for authoring a problem).
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,6 +37,8 @@ from .loader import question_from_dict
 from .pricing import Usage
 from .questions import TestCase
 from .runner import run_submission
+
+logger = logging.getLogger(__name__)
 
 _PROMPT = (Path(__file__).parent / "prompts" / "question_draft.md").read_text().strip()
 
@@ -162,21 +165,59 @@ def _offline_result() -> DraftResult:
     )
 
 
+# How many times to draft before giving up. Drafting is stochastic: a spec whose
+# reference won't compile, or whose cases all die, is usually a one-off — asking
+# again tends to produce a working draft. Bounded because each attempt is a paid
+# model call plus reference execution. Retries are NOT a fix for a bad brief: a
+# genuinely ambiguous ask fails every attempt and the warnings say why.
+_DRAFT_ATTEMPTS = int(os.environ.get("ASSESS_DRAFT_ATTEMPTS", "2"))
+
+
 def draft_question(
     brief: str,
     *,
     language: str,
     difficulty: str | None = None,
     target_complexity: str | None = None,
+    attempts: int = _DRAFT_ATTEMPTS,
 ) -> DraftResult:
     """Draft a validated Question from a natural-language brief.
 
     Returns a DraftResult; `question` is a loader-shaped JSON dict when a usable,
     validated question was produced, else None with `warnings` explaining why.
+
+    Retries up to `attempts` times while the draft comes back unusable — the model
+    is non-deterministic, so a second ask often succeeds where the first produced
+    (say) a reference that didn't compile. The last attempt's warnings are what
+    the caller sees, prefixed with how many attempts were made.
     """
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return _offline_result()
     config = DraftConfig.from_env()
+
+    result = DraftResult(engine=config.engine_label, question=None)
+    for attempt in range(1, max(1, attempts) + 1):
+        result = _draft_once(config, brief, language, difficulty, target_complexity)
+        if result.question is not None:
+            return result
+        logger.info(
+            "draft attempt %d/%d produced no usable question: %s",
+            attempt,
+            attempts,
+            "; ".join(result.warnings),
+        )
+    if attempts > 1:
+        result.warnings.insert(0, f"Gave up after {attempts} drafting attempts.")
+    return result
+
+
+def _draft_once(
+    config: DraftConfig,
+    brief: str,
+    language: str,
+    difficulty: str | None,
+    target_complexity: str | None,
+) -> DraftResult:
     try:
         spec, usage = _draft_spec(config, brief, language, difficulty, target_complexity)
     except Exception as exc:

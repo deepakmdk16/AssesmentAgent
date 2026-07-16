@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from assessment_agent import api
+from assessment_agent import api, authoring
 from assessment_agent.agent import assess
 from assessment_agent.api import app
 from assessment_agent.authoring import DraftResult, DraftSpec, build_from_spec, draft_question
@@ -124,6 +124,84 @@ def test_broken_generator_rejects_question():
     )
     assert result.question is None
     assert any("performance" in w.lower() or "reference" in w.lower() for w in result.warnings)
+
+
+# --- retry ------------------------------------------------------------------
+#
+# Drafting is stochastic, so an unusable draft is worth asking again for. These
+# drive `_draft_spec` directly (no API key, no model call).
+
+
+def _with_key_and_specs(monkeypatch, specs: list[DraftSpec | Exception]):
+    """Make draft_question run, with `_draft_spec` yielding `specs` in order."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    calls: list[int] = []
+
+    def _fake(config, brief, language, difficulty, target_complexity):
+        item = specs[len(calls)]
+        calls.append(1)
+        if isinstance(item, Exception):
+            raise item
+        return item, None
+
+    monkeypatch.setattr(authoring, "_draft_spec", _fake)
+    return calls
+
+
+def test_retries_when_the_first_draft_is_unusable(monkeypatch):
+    """The C++-header case: attempt 1's reference won't run, attempt 2 is fine."""
+    bad = _spec(reference_solution="import sys\nraise SystemExit(1)\n")
+    calls = _with_key_and_specs(monkeypatch, [bad, _spec()])
+
+    result = draft_question("sum of n", language="python", attempts=2)
+
+    assert len(calls) == 2  # it asked again
+    assert result.question is not None  # and the retry produced a usable draft
+
+
+def test_does_not_retry_a_good_draft(monkeypatch):
+    """A usable first draft must not burn a second paid model call."""
+    calls = _with_key_and_specs(monkeypatch, [_spec(), _spec()])
+
+    result = draft_question("sum of n", language="python", attempts=2)
+
+    assert len(calls) == 1
+    assert result.question is not None
+
+
+def test_gives_up_after_the_attempt_budget_and_explains(monkeypatch):
+    bad = _spec(reference_solution="import sys\nraise SystemExit(1)\n")
+    calls = _with_key_and_specs(monkeypatch, [bad, bad])
+
+    result = draft_question("sum of n", language="python", attempts=2)
+
+    assert len(calls) == 2
+    assert result.question is None
+    assert any("gave up after 2" in w.lower() for w in result.warnings)
+    # The underlying reason survives alongside the give-up note.
+    assert any("reference" in w.lower() for w in result.warnings)
+
+
+def test_retries_a_model_call_that_raises(monkeypatch):
+    """A transient API error on attempt 1 shouldn't sink the whole draft."""
+    calls = _with_key_and_specs(monkeypatch, [RuntimeError("overloaded"), _spec()])
+
+    result = draft_question("sum of n", language="python", attempts=2)
+
+    assert len(calls) == 2
+    assert result.question is not None
+
+
+def test_attempts_of_one_disables_retry(monkeypatch):
+    bad = _spec(reference_solution="import sys\nraise SystemExit(1)\n")
+    calls = _with_key_and_specs(monkeypatch, [bad])
+
+    result = draft_question("sum of n", language="python", attempts=1)
+
+    assert len(calls) == 1
+    assert result.question is None
+    # No "gave up" preamble when retry wasn't in play — just the real reason.
+    assert not any("gave up" in w.lower() for w in result.warnings)
 
 
 # --- endpoint ---------------------------------------------------------------

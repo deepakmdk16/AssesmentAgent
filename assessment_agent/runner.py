@@ -56,6 +56,22 @@ class TestOutcome:
 
 
 @dataclass
+class RunResult:
+    """The outcome of a single ad-hoc execution (the 'Run' path, not grading).
+
+    Nothing is compared and there is no verdict: this is a candidate trying their
+    own input, so we report only what the program did.
+    """
+
+    stdout: str
+    stderr: str | None
+    duration_s: float
+    timed_out: bool
+    compile_error: str | None = None
+    infra_error: str | None = None
+
+
+@dataclass
 class ExecutionReport:
     language: str
     compile_error: str | None
@@ -279,3 +295,41 @@ def run_submission(
         return ExecutionReport(language, None, [o for o in outcomes if o is not None])
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+
+
+def run_once(
+    source: str,
+    language: str,
+    stdin: str = "",
+    *,
+    time_limit_s: float = 2.0,
+) -> RunResult:
+    """Execute `source` once against ad-hoc `stdin` and report what it printed.
+
+    This backs the candidate's "Run" button: they supply their own input and see
+    their own output. Nothing is compared against an expected value and no
+    verdict is produced — grading stays in `assess`.
+
+    Implemented on top of `run_submission` with a single throwaway case so that
+    compilation, the language-scaled time limit and the per-child resource caps
+    behave exactly as they do in a graded run. The case's `expected` is unused
+    (there is nothing to be right or wrong about), so its `passed` flag is
+    ignored here.
+    """
+    report = run_submission(
+        source,
+        language,
+        (TestCase(name="__run__", stdin=stdin, expected=""),),
+        time_limit_s=time_limit_s,
+    )
+    if report.infra_error is not None:
+        return RunResult("", None, 0.0, False, infra_error=report.infra_error)
+    if report.compile_error is not None:
+        return RunResult("", None, 0.0, False, compile_error=report.compile_error)
+    outcome = report.outcomes[0]
+    return RunResult(
+        stdout=outcome.actual,
+        stderr=outcome.error,
+        duration_s=outcome.duration_s,
+        timed_out=outcome.timed_out,
+    )
