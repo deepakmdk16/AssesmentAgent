@@ -28,7 +28,7 @@ A single question with:
   specifies. This is the ORACLE: the grader executes it to compute the expected
   output for every test input, so it must be correct and meet the target
   complexity. Do not print anything except the required answer (no prompts, no
-  debug lines).
+  debug lines). It must be **one self-contained file** — see requirement 5.
 - `reference_language` — the language of `reference_solution` (echo the
   requested language).
 - `correctness_inputs` — several **small** test inputs (stdin only — never
@@ -66,3 +66,12 @@ A single question with:
    gate** but need not be enormous — sized to the constraints is enough.
 4. Provide **at least one** correctness input and a working
    `performance_generator`.
+5. **One file, no extra headers or modules.** Both `reference_solution` and
+   `performance_generator` are written to a *single* source file and compiled as
+   one translation unit (C/C++ compile exactly `main.c`/`main.cpp`; Java takes one
+   public class). There is no second file, so anything you `#include`, `import`
+   or `require` beyond the language's own standard library does not exist and the
+   build fails. In particular: do **not** split declarations into a `.hpp`/header,
+   do not reference a companion module, and do not assume a third-party package.
+   Everything — every struct, helper and `main` — goes in the one file, using only
+   the standard library.

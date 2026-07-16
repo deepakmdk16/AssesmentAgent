@@ -13,6 +13,14 @@ delivers the result asynchronously:
     GET  /assessments/{job_id}   -> {status, result?}   polling fallback
     GET  /health
 
+Alongside grading there are two synchronous, non-grading execution endpoints that
+back a candidate's editor. Neither calls an LLM, produces a verdict, or records a
+job — they exist so a candidate can try their code before committing to a submit:
+
+    POST /run        -> run once against caller-supplied stdin; return its output
+    POST /run/tests  -> run the question's tests; return pass/fail per case ONLY
+                        (no input/expected/actual — that's the answer key)
+
 Run it with:  `uv run assess-api`  (or `uvicorn assessment_agent.api:app`).
 
 The in-memory `_JOBS` registry is transient run-state for the polling fallback,
@@ -43,6 +51,7 @@ from .authoring import draft_question, draft_to_dict
 from .constants import OFFLINE_ENGINE
 from .languages import LANGUAGES
 from .loader import question_from_dict
+from .runner import run_once, run_submission
 
 app = FastAPI(
     title="Assessment Agent",
@@ -122,6 +131,21 @@ class AssessmentRequest(BaseModel):
     )
 
 
+class RunRequest(BaseModel):
+    code: str = Field(min_length=1, description="Source to execute.")
+    language: str = Field(description=f"One of {sorted(LANGUAGES)}.")
+    stdin: str = Field(default="", description="Input fed to the program on stdin.")
+    time_limit_s: float = Field(
+        default=2.0, gt=0, le=30, description="Base per-run time limit (scaled per language)."
+    )
+
+
+class RunTestsRequest(BaseModel):
+    question: dict = Field(description="The full question (same shape as POST /assessments).")
+    code: str = Field(min_length=1, description="Source to execute.")
+    language: str = Field(description=f"One of {sorted(LANGUAGES)}.")
+
+
 class DraftRequest(BaseModel):
     brief: str = Field(min_length=1, description="Natural-language description of the problem.")
     language: str = Field(
@@ -169,6 +193,70 @@ def draft(req: DraftRequest) -> dict:
         # Draft ran but produced nothing usable — surface the warnings, don't 200.
         raise HTTPException(status_code=422, detail=payload)
     return payload
+
+
+def _require_language(language: str) -> None:
+    if language not in LANGUAGES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unsupported language {language!r}; expected one of {sorted(LANGUAGES)}.",
+        )
+
+
+@app.post("/run", dependencies=[Depends(_require_token)])
+def run_code(req: RunRequest) -> dict:
+    """Execute code once against caller-supplied stdin and return what it printed.
+
+    Synchronous and stateless: this is the candidate's "Run" button, not grading.
+    Nothing is compared, no verdict is produced, no LLM is called and no job is
+    recorded. Runs through the same sandboxing/limits as a graded execution.
+    """
+    _require_language(req.language)
+    result = run_once(req.code, req.language, req.stdin, time_limit_s=req.time_limit_s)
+    return {
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "duration_s": round(result.duration_s, 3),
+        "timed_out": result.timed_out,
+        "compile_error": result.compile_error,
+        "infra_error": result.infra_error,
+    }
+
+
+@app.post("/run/tests", dependencies=[Depends(_require_token)])
+def run_tests(req: RunTestsRequest) -> dict:
+    """Run a submission against the question's tests and report pass/fail only.
+
+    The candidate-facing rehearsal of `POST /assessments`: synchronous, no LLM
+    judge, no verdict, nothing stored.
+
+    Deliberately returns **no** input/expected/actual — only each case's status.
+    The platform redacts too, but the answer key never crossing the wire on this
+    path means a bug there can't leak it. The graded path (`/assessments`) still
+    returns full detail, which is what the interviewer's report card reads.
+    """
+    _require_language(req.language)
+    try:
+        question = question_from_dict(req.question)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"invalid question: {exc}") from None
+
+    report = run_submission(
+        req.code, req.language, question.test_cases, time_limit_s=question.time_limit_s
+    )
+    return {
+        "compile_error": report.compile_error,
+        "infra_error": report.infra_error,
+        "test_cases": [
+            {
+                "name": o.name,
+                "category": o.category,
+                "status": "PASS" if o.passed else ("TLE" if o.timed_out else "FAIL"),
+                "duration_s": round(o.duration_s, 3),
+            }
+            for o in report.outcomes
+        ],
+    }
 
 
 @app.post("/assessments", status_code=202, dependencies=[Depends(_require_token)])
