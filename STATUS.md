@@ -33,22 +33,24 @@ Durable architecture / boundary / invariants live in CLAUDE.md + CONVENTIONS.md.
   submission — set low it breaks legitimate code (the login session's own process
   count already exceeds any sane cap), set high it does nothing.
 
-- **⚠️ All three eval baselines are STALE — re-run before trusting the judge.**
-  The 2026-07-17 hardening pass changed the *prompts*: candidate source is now
-  fenced with `llm.wrap_untrusted` on both the judge and adversarial paths, which
-  is exactly the "model/prompt change" this item says invalidates a baseline. The
-  runs below predate that edit and were **not** re-run (they need a real key and
-  cost money). Re-run all three and record new numbers:
-  `assess-eval`, `assess-draft-eval`, `assess-adversarial-eval`.
-  The prior baselines, for comparison:
-  - **Drafting** — `assess-draft-eval` ([draft_eval.py]): each brief must draft into a
-    valid question whose own reference grades PASS 100%. **Baseline 3/3 on
-    claude-sonnet-4-6 (2026-07-17):** two_sum 7+1, reverse_words 7+1, count_islands 9+1.
-  - **Adversarial gen** — `assess-adversarial-eval` ([adversarial_eval.py]): the probe
-    runs against known-correct references and must generate cases yet report ZERO
-    findings (a finding on a correct solution = a false positive). **Baseline 2/2 on
-    claude-sonnet-4-6 (2026-07-17):** strong + knapsack_good each probed 8, no
-    crash/timeout.
+- **LLM-surface eval baselines (all green on claude-sonnet-4-6, 2026-07-17,
+  re-run after the `llm.wrap_untrusted` prompt change).** The fence did not
+  degrade any surface — every anchor held at full marks.
+  - **Judge** — `assess-eval` ([eval.py]): **7/7 verdicts**, and the reported
+    (never gated) quality labels also 7/7 complexity + 7/7 meets-constraints.
+    Cost: **$0.0109/candidate → ~$10.90 per 1,000** (4202 in / 3153 out, 17730
+    cache-read — the rubric prefix is caching as designed).
+  - **Drafting** — `assess-draft-eval` ([draft_eval.py]): each brief must draft
+    into a valid question whose own reference grades PASS 100%. **3/3:** two_sum
+    7+1, reverse_words 8+1, count_islands 10+1. Note the case *counts* drift run
+    to run (the previous baseline saw 7+1 / 9+1 for the last two) — the model
+    proposes inputs and only those surviving the reference run are kept, so treat
+    the count as ~7-10 correctness + 1 perf, not a fixed number. The anchor is
+    "reference grades PASS 100%", which is what must not move.
+  - **Adversarial gen** — `assess-adversarial-eval` ([adversarial_eval.py]): the
+    probe runs against known-correct references and must generate cases yet report
+    ZERO findings (a finding on a correct solution = a false positive). **2/2:**
+    strong + knapsack_good each probed 8, no crash/timeout.
   Re-run all three after any model/prompt change — offline they SKIP, so a green
   `pytest` is never evidence they passed.
 - **Candidate-feedback agent (cross-repo, not yet chosen).** Once the platform can
