@@ -49,8 +49,14 @@ Rules are phrased as "do X, not Y" on purpose — specific and local beats abstr
 - `ANTHROPIC_API_KEY` comes from the **environment only** — never committed,
   logged, or written to a report/JSON. Absent key → offline heuristic, not an
   error. gitleaks runs in pre-commit as a backstop.
-- Candidate code is untrusted; the runner protects only with a timeout. Do not
-  weaken that, and note the sandboxing gap in any production-facing work.
+- Candidate code is untrusted. `runner.py`'s module docstring is the single
+  source of truth for what is and isn't protected — point at it, don't restate
+  it (three docs once claimed "only a timeout" long after that stopped being
+  true). Do not weaken those protections, and note the sandboxing gap in any
+  production-facing work.
+- Untrusted text that reaches a model must be fenced with `llm.wrap_untrusted`.
+  The fence is not the mitigation — computing the verdict before any model call
+  is — but a submission must not be able to author its own quality report.
 
 ## 6. Style & enforcement
 - `uv run ruff check .` and `uv run mypy` must be clean before commit (or

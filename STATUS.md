@@ -7,10 +7,40 @@ Durable architecture / boundary / invariants live in CLAUDE.md + CONVENTIONS.md.
 
 ## Open items
 
-- **LLM-surface evals — drafting baselined; adversarial needs one baseline run.**
-  Both drafting and adversarial-gen now have anchored eval harnesses (offline they
-  SKIP — no heuristic; logic covered by `tests/test_draft_eval.py` +
-  `tests/test_adversarial_eval.py`, in the gate).
+- **Deferred: global (cross-repo) Claude-setup fixes.** Found during the
+  2026-07-17 audit but out of scope for a repo-level session — they live in
+  `~/.claude/` and are shared with `assessment-platform`:
+  - `~/.claude/hooks/guard.py` misses `rm -fr` and `rm -r -f` (its risky-tier
+    regex requires `r` before `f` in one flag cluster, so both get **no** prompt;
+    the catastrophic tier for `/` and `~` does still catch them). Add a probe
+    script so the patterns stay proven.
+  - `guard.py` guards Bash-reading-`.env` and Write/Edit-of-secrets but **not the
+    Read tool** — add a Read matcher reusing its `sensitive` list.
+  - Stray `~/.claude/.claude.json` (headroom-only, wrong directory, loaded by
+    nothing) — delete; the real config is `~/.claude.json`.
+  - Global `CLAUDE.md` §7 mandates serena-before-Read but serena needs an
+    explicit `activate_project` first. Worked around repo-side (see CLAUDE.md);
+    the global rule should say so too.
+- **Rate limiting on the API (not started).** `/assessments` and `/run` execute
+  code, and `adversarial: true` spends API money per call. Fail-closed auth now
+  gates who can reach them, but there is no per-caller quota. Needs a dep
+  (e.g. slowapi) or a reverse proxy — decide which before building.
+- **Sandboxing the runner (unchanged, still the biggest production gap).** The
+  runner now has a timeout, memory/output rlimits and a process-group kill, but
+  nothing bounds fork bombs or network egress. Real isolation is a container with
+  no network, dropped capabilities and cgroups (incl. the pids controller).
+  `RLIMIT_NPROC` was tried and rejected: it counts per-UID, so it cannot bound one
+  submission — set low it breaks legitimate code (the login session's own process
+  count already exceeds any sane cap), set high it does nothing.
+
+- **⚠️ All three eval baselines are STALE — re-run before trusting the judge.**
+  The 2026-07-17 hardening pass changed the *prompts*: candidate source is now
+  fenced with `llm.wrap_untrusted` on both the judge and adversarial paths, which
+  is exactly the "model/prompt change" this item says invalidates a baseline. The
+  runs below predate that edit and were **not** re-run (they need a real key and
+  cost money). Re-run all three and record new numbers:
+  `assess-eval`, `assess-draft-eval`, `assess-adversarial-eval`.
+  The prior baselines, for comparison:
   - **Drafting** — `assess-draft-eval` ([draft_eval.py]): each brief must draft into a
     valid question whose own reference grades PASS 100%. **Baseline 3/3 on
     claude-sonnet-4-6 (2026-07-17):** two_sum 7+1, reverse_words 7+1, count_islands 9+1.
@@ -19,7 +49,8 @@ Durable architecture / boundary / invariants live in CLAUDE.md + CONVENTIONS.md.
     findings (a finding on a correct solution = a false positive). **Baseline 2/2 on
     claude-sonnet-4-6 (2026-07-17):** strong + knapsack_good each probed 8, no
     crash/timeout.
-  Re-run both after any model/prompt change.
+  Re-run all three after any model/prompt change — offline they SKIP, so a green
+  `pytest` is never evidence they passed.
 - **Candidate-feedback agent (cross-repo, not yet chosen).** Once the platform can
   surface it — actionable feedback to candidates. Spans both repos.
 - **Multiple examples per question (deferred).** `Question`/loader/report hold a
