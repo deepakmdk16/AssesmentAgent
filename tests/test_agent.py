@@ -3,7 +3,9 @@ import subprocess
 
 import pytest
 
+from assessment_agent import judge
 from assessment_agent.agent import assess
+from assessment_agent.constants import FAILED_ENGINE
 from assessment_agent.eval_cases import EVAL_CASES
 
 STRONG = next(c for c in EVAL_CASES if c.id == "strong").source
@@ -129,3 +131,26 @@ def test_missing_toolchain_is_error_not_fail(monkeypatch):
     result = assess("package main", "go")
     assert result.verdict == "ERROR"
     assert "Could not evaluate" in result.reason
+
+
+def test_a_failing_judge_does_not_cost_the_candidate_their_verdict(monkeypatch):
+    """The end-to-end guarantee behind CONVENTIONS.md §1.
+
+    A correct submission scores 100% from the deterministic runner alone. If the
+    quality judge then blows up, the candidate must still get their PASS — the
+    judge reports, it does not grade. Regression test for the judge being the one
+    LLM surface that used to let its exception escape.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.setattr(
+        judge,
+        "_assess_with_claude",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("Judge returned invalid JSON")),
+    )
+
+    result = assess(STRONG, "python")
+
+    assert result.verdict == "PASS"
+    assert result.score_pct == 100.0
+    assert result.quality_engine == FAILED_ENGINE
+    assert "unavailable" in result.quality.summary

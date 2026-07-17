@@ -6,25 +6,33 @@ expected output. Each run is bounded by a per-language time limit, so a
 correct-but-too-slow solution registers as a time-limit-exceeded (TLE) failure
 rather than a wrong answer.
 
-Correctness cases run concurrently for throughput; performance cases run in
-isolation so CPU contention can't inflate the timing that drives the TLE gate
-(see `run_submission`). Output comparison — and therefore the verdict — is
-unaffected by parallelism.
+Every case runs serially, one child at a time. Performance cases need it (CPU
+contention would inflate the timing that drives the TLE gate), and correctness
+cases are held to it because the per-child resource limits are applied with
+`preexec_fn`, which CPython documents as unsafe to use from a multithreaded
+parent — a fork/exec deadlock there would hang a candidate's grade. Small
+correctness inputs are cheap, so the throughput we give up is worth strictly
+more as a guarantee. See `run_submission`.
 
 Security note: this executes untrusted candidate code. Beyond the per-run timeout,
 each child gets best-effort memory (`RLIMIT_AS`) and output (`RLIMIT_FSIZE`)
 ceilings so a submission can't OOM the worker by allocating or printing without
-bound (see `_apply_limits`; tune with `ASSESS_MEM_LIMIT_MB` / `ASSESS_OUTPUT_LIMIT_MB`).
-These are defense-in-depth, not a sandbox — `RLIMIT_AS` in particular is not
-honored on every platform (e.g. macOS). For production, still run this inside a
-locked-down sandbox (container with no network, dropped capabilities, cgroups).
+bound (see `_apply_limits`; tune with `ASSESS_MEM_LIMIT_MB` /
+`ASSESS_OUTPUT_LIMIT_MB`). Each child also leads its own process group, so a
+timeout kills the whole tree rather than just the direct child and can't leave
+orphans running on the worker (see `_kill_tree`).
+
+These are defense-in-depth, not a sandbox — `RLIMIT_AS` is not honored on every
+platform (e.g. macOS), and nothing here bounds fork bombs or network egress. For
+production, still run this inside a locked-down sandbox (container with no
+network, dropped capabilities, cgroups incl. the pids controller).
 """
 
 from __future__ import annotations
 
-import concurrent.futures
 import os
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
@@ -36,7 +44,7 @@ try:
 except ImportError:  # pragma: no cover - non-POSIX (e.g. Windows)
     resource = None  # type: ignore[assignment]
 
-from .constants import CORRECTNESS, PERFORMANCE, Category
+from .constants import CORRECTNESS, Category
 from .languages import LANGUAGES
 from .questions import TestCase
 
@@ -125,18 +133,29 @@ def _normalize(text: str) -> str:
 
 
 # Best-effort per-child resource ceilings (0 disables). Read at import; override
-# with env vars. RLIMIT_AS caps address space (memory), RLIMIT_FSIZE caps bytes
+# with env vars. RLIMIT_AS caps address space (memory) and RLIMIT_FSIZE caps bytes
 # written to stdout/stderr (which we redirect to files, so this bites).
+#
+# Deliberately NOT here: RLIMIT_NPROC. It counts processes per *UID*, not per
+# process tree, so it cannot bound one submission: set high it does nothing, and
+# set low it fails any child the login session's existing process count already
+# exceeds — breaking legitimate submissions rather than fork bombs. Orphans are
+# handled by the process-group kill (`_kill_tree`); a real fork-bomb brake needs
+# the sandbox's pids controller (cgroups), per the module docstring.
 _MEM_LIMIT_BYTES = int(os.environ.get("ASSESS_MEM_LIMIT_MB", "512")) * 1024 * 1024
 _OUTPUT_LIMIT_BYTES = int(os.environ.get("ASSESS_OUTPUT_LIMIT_MB", "64")) * 1024 * 1024
 
 
 def _apply_limits() -> None:
-    """Set memory/output ceilings on the child just before exec (POSIX only).
+    """Set resource ceilings on the child just before exec (POSIX only).
 
     Best-effort: a platform that rejects a given limit (RLIMIT_AS is not honored
     on macOS) degrades to unlimited for that resource rather than failing the run.
-    Kept minimal because it runs post-fork in a possibly-multithreaded parent.
+
+    IMPORTANT: this runs post-fork via `preexec_fn`, which CPython documents as
+    unsafe in the presence of threads. `run_submission` therefore executes cases
+    serially — do not reintroduce a thread pool around this without first moving
+    the limits off `preexec_fn`.
     """
     for res_id, cap in (
         (resource.RLIMIT_AS, _MEM_LIMIT_BYTES),
@@ -154,6 +173,31 @@ def _apply_limits() -> None:
 # verdict. None on non-POSIX, where these limits aren't available.
 _PREEXEC = _apply_limits if resource is not None else None
 
+# Give each child its own session/process group so a timeout can kill the whole
+# tree (see `_kill_tree`). POSIX-only, like the rlimits above.
+_NEW_SESSION = os.name == "posix"
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """Kill the child *and everything it spawned*.
+
+    `Popen.kill` signals only the direct child, so a submission that forks would
+    leave its children running on the worker after the case was scored. The child
+    leads its own process group (`start_new_session`), so one killpg takes the
+    whole tree. Falls back to killing just the child where process groups aren't
+    available (non-POSIX) or the group is already gone.
+    """
+    if _NEW_SESSION:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            return
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        pass
+
 
 def _run_case(run_cmd: list[str], workdir: Path, tc: TestCase, limit: float) -> TestOutcome | str:
     """Run one test case. Returns a TestOutcome, or an infra-error string when the
@@ -163,22 +207,29 @@ def _run_case(run_cmd: list[str], workdir: Path, tc: TestCase, limit: float) -> 
     stdout/stderr go to temp files (not pipes) so RLIMIT_FSIZE caps a runaway
     print without the parent buffering it in memory; a child that exceeds the cap
     is killed (SIGXFSZ) and surfaces as a failing case, never as a worker OOM.
+
+    Uses Popen rather than `subprocess.run` because `run`'s timeout path kills
+    only the direct child; we need the whole process group (see `_kill_tree`).
     """
     start = time.perf_counter()
     with tempfile.TemporaryFile() as out_f, tempfile.TemporaryFile() as err_f:
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 run_cmd,
                 cwd=workdir,
-                input=tc.stdin.encode(),
+                stdin=subprocess.PIPE,
                 stdout=out_f,
                 stderr=err_f,
-                timeout=limit,
                 preexec_fn=_PREEXEC,
+                start_new_session=_NEW_SESSION,
             )
         except FileNotFoundError as exc:
             return f"runtime not installed: {exc}"
+        try:
+            proc.communicate(input=tc.stdin.encode(), timeout=limit)
         except subprocess.TimeoutExpired:
+            _kill_tree(proc)
+            proc.communicate()  # reap, so the child can't linger as a zombie
             return TestOutcome(
                 tc.name,
                 tc.stdin,
@@ -192,15 +243,16 @@ def _run_case(run_cmd: list[str], workdir: Path, tc: TestCase, limit: float) -> 
                 weight=tc.weight,
             )
         duration = time.perf_counter() - start
+        returncode = proc.returncode
         out_f.seek(0)
         err_f.seek(0)
         stdout = out_f.read().decode(errors="replace")
         stderr = err_f.read().decode(errors="replace")
 
-    error = stderr.strip() if proc.returncode != 0 else None
-    if proc.returncode != 0 and not error:
+    error = stderr.strip() if returncode != 0 else None
+    if returncode != 0 and not error:
         # A signal (e.g. SIGXFSZ from the output cap, or OOM) leaves no stderr.
-        error = f"runtime error (exit code {proc.returncode})"
+        error = f"runtime error (exit code {returncode})"
     passed = error is None and _normalize(stdout) == _normalize(tc.expected)
     return TestOutcome(
         tc.name,
@@ -258,41 +310,28 @@ def run_submission(
             if proc.returncode != 0:
                 return ExecutionReport(language, proc.stderr.strip() or "compilation failed", [])
 
-        # Execution is split by category so parallelism never corrupts the grade:
-        #   - correctness cases run concurrently (bounded) — their inputs are small
-        #     and their timing is not gated, so CPU contention is harmless;
-        #   - performance cases run isolated, one at a time with nothing else
-        #     running, so their measured duration (which drives the TLE gate) is
-        #     trustworthy and a fast solution can't be falsely timed out under load.
-        # They run in separate phases, so the two never overlap. The workdir is
-        # shared, so a candidate that writes fixed-name files could race during the
-        # correctness phase — acceptable under the existing untrusted-code caveat.
-        outcomes: list[TestOutcome | None] = [None] * len(test_cases)
-        corr_idx = [i for i, tc in enumerate(test_cases) if tc.category != PERFORMANCE]
-        perf_idx = [i for i, tc in enumerate(test_cases) if tc.category == PERFORMANCE]
-
-        # Phase 1: correctness cases in parallel (bounded to avoid heavy contention).
-        if corr_idx:
-            max_workers = min(len(corr_idx), os.cpu_count() or 1)
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
-                futures = {
-                    pool.submit(_run_case, run_cmd, workdir, test_cases[i], limit): i
-                    for i in corr_idx
-                }
-                for future in concurrent.futures.as_completed(futures):
-                    result = future.result()
-                    if isinstance(result, str):  # runtime missing — inconclusive
-                        return ExecutionReport(language, None, [], infra_error=result)
-                    outcomes[futures[future]] = result
-
-        # Phase 2: performance cases isolated, for clean (uncontended) timing.
-        for i in perf_idx:
-            result = _run_case(run_cmd, workdir, test_cases[i], limit)
-            if isinstance(result, str):
+        # Cases run one at a time, in order. Two independent reasons, either of
+        # which alone would force it:
+        #   - performance cases must be isolated, so their measured duration (which
+        #     drives the TLE gate) is uncontended and a fast solution can't be
+        #     falsely timed out under load;
+        #   - the per-child rlimits go on via `preexec_fn`, which CPython documents
+        #     as unsafe from a multithreaded parent. Running correctness cases in a
+        #     thread pool risked a fork/exec deadlock hanging a candidate's grade —
+        #     a rare, unreproducible failure on the one thing that must be reliable.
+        # Correctness inputs are small, so the throughput cost is minor. To make
+        # them concurrent again, first move the limits off `preexec_fn` (e.g. a
+        # process pool), don't just re-add threads.
+        # The workdir is shared across cases, but only one child runs at a time, so
+        # a candidate writing fixed-name files can't race itself.
+        outcomes: list[TestOutcome] = []
+        for tc in test_cases:
+            result = _run_case(run_cmd, workdir, tc, limit)
+            if isinstance(result, str):  # runtime missing — inconclusive
                 return ExecutionReport(language, None, [], infra_error=result)
-            outcomes[i] = result
+            outcomes.append(result)
 
-        return ExecutionReport(language, None, [o for o in outcomes if o is not None])
+        return ExecutionReport(language, None, outcomes)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
@@ -315,6 +354,11 @@ def run_once(
     behave exactly as they do in a graded run. The case's `expected` is unused
     (there is nothing to be right or wrong about), so its `passed` flag is
     ignored here.
+
+    Note the deliberate exception to `questions.validate_question`, which forbids
+    an empty `expected`: that rule protects *graded* questions, where an empty
+    expected means a broken oracle. This case is never graded and never leaves
+    this function, so it doesn't go through validation.
     """
     report = run_submission(
         source,

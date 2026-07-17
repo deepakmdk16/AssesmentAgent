@@ -1,3 +1,8 @@
+import os
+import subprocess
+import time
+import uuid
+
 import pytest
 
 from assessment_agent import runner
@@ -82,3 +87,26 @@ def test_mixed_correctness_and_performance_all_run_in_order():
     assert [o.name for o in report.outcomes] == ["corr1", "perf", "corr2"]
     assert [o.category for o in report.outcomes] == [CORRECTNESS, PERFORMANCE, CORRECTNESS]
     assert all(o.passed for o in report.outcomes)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX-only")
+def test_timeout_kills_the_whole_process_tree_not_just_the_child():
+    """A submission that forks and then hangs must not leave orphans behind.
+
+    `subprocess.run`'s timeout signals only the direct child, so the grandchild
+    here would survive the case being scored and keep running on the worker.
+    Each child leads its own process group precisely so the timeout can take the
+    whole tree.
+    """
+    marker = f"assess_orphan_probe_{uuid.uuid4().hex}"
+    src = (
+        "import subprocess, sys, time\n"
+        f"subprocess.Popen([sys.executable, '-c', \"import time; time.sleep(60)  # {marker}\"])\n"
+        "time.sleep(60)\n"
+    )
+    report = run_submission(src, "python", (TestCase("forker", "", "x"),), time_limit_s=0.5)
+
+    assert report.outcomes[0].timed_out is True
+    time.sleep(0.3)  # give the kill a beat to land
+    survivors = subprocess.run(["pgrep", "-f", marker], capture_output=True, text=True)
+    assert survivors.stdout.strip() == "", "the forked grandchild outlived the timeout"

@@ -33,6 +33,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from .constants import OFFLINE_ENGINE, PERFORMANCE
+from .llm import client_timeout_s, wrap_untrusted
 from .pricing import Usage
 from .questions import Question, TestCase
 from .runner import run_submission
@@ -163,7 +164,7 @@ def _generate_cases(
 ) -> tuple[list[GeneratedCase], Usage]:
     import anthropic
 
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic(timeout=client_timeout_s())
 
     example = ""
     if question.example_input is not None or question.example_output is not None:
@@ -175,8 +176,9 @@ def _generate_cases(
         f"PROBLEM STATEMENT:\n{question.prompt}\n\n"
         f"CONSTRAINTS:\n{question.constraints}{example}\n\n"
         f"LANGUAGE: {language}\n\n"
-        f"CANDIDATE SUBMISSION:\n```{language}\n{source}\n```\n\n"
-        f"Propose up to {config.num_cases} adversarial input cases."
+        f"CANDIDATE SUBMISSION:\n"
+        + wrap_untrusted("candidate_submission", f"```{language}\n{source}\n```")
+        + f"\n\nPropose up to {config.num_cases} adversarial input cases."
     )
 
     output_config: dict = {"format": {"type": "json_schema", "schema": _GEN_SCHEMA}}
