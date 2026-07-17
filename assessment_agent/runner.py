@@ -15,17 +15,24 @@ correctness inputs are cheap, so the throughput we give up is worth strictly
 more as a guarantee. See `run_submission`.
 
 Security note: this executes untrusted candidate code. Beyond the per-run timeout,
-each child gets best-effort memory (`RLIMIT_AS`) and output (`RLIMIT_FSIZE`)
-ceilings so a submission can't OOM the worker by allocating or printing without
-bound (see `_apply_limits`; tune with `ASSESS_MEM_LIMIT_MB` /
-`ASSESS_OUTPUT_LIMIT_MB`). Each child also leads its own process group, so a
-timeout kills the whole tree rather than just the direct child and can't leave
-orphans running on the worker (see `_kill_tree`).
+each child gets a best-effort output ceiling (`RLIMIT_FSIZE`) and — for languages
+whose runtime doesn't reserve address space wholesale — a memory ceiling
+(`RLIMIT_AS`); see `_apply_limits` and `Language.address_space_capped`, tune with
+`ASSESS_MEM_LIMIT_MB` / `ASSESS_OUTPUT_LIMIT_MB`. Each child also leads its own
+process group, so a timeout kills the whole tree rather than just the direct
+child and can't leave orphans running on the worker (see `_kill_tree`).
 
-These are defense-in-depth, not a sandbox — `RLIMIT_AS` is not honored on every
-platform (e.g. macOS), and nothing here bounds fork bombs or network egress. For
-production, still run this inside a locked-down sandbox (container with no
-network, dropped capabilities, cgroups incl. the pids controller).
+Be precise about what the memory ceiling is worth, because it is easy to overrate:
+`RLIMIT_AS` caps *address space*, not memory in use, and it is skipped entirely
+for the JVM and Go (which reserve GBs of untouched virtual space at startup) and
+silently ignored by macOS. So it bounds a runaway allocation in CPython on Linux
+and little else.
+
+These are defense-in-depth, NOT a sandbox. Nothing here bounds fork bombs,
+network egress, or memory on the runtimes that opt out. For production, run this
+inside a locked-down sandbox (container with no network, dropped capabilities,
+and cgroups for memory + pids) — that is the layer that can actually express
+"this submission gets N megabytes", which no rlimit here can.
 """
 
 from __future__ import annotations
@@ -146,21 +153,25 @@ _MEM_LIMIT_BYTES = int(os.environ.get("ASSESS_MEM_LIMIT_MB", "512")) * 1024 * 10
 _OUTPUT_LIMIT_BYTES = int(os.environ.get("ASSESS_OUTPUT_LIMIT_MB", "64")) * 1024 * 1024
 
 
-def _apply_limits() -> None:
+def _apply_limits(cap_address_space: bool) -> None:
     """Set resource ceilings on the child just before exec (POSIX only).
 
     Best-effort: a platform that rejects a given limit (RLIMIT_AS is not honored
     on macOS) degrades to unlimited for that resource rather than failing the run.
+
+    `cap_address_space` is False for languages whose runtime reserves far more
+    address space than it uses (see `Language.address_space_capped`) — for them
+    RLIMIT_AS blocks startup rather than bounding usage.
 
     IMPORTANT: this runs post-fork via `preexec_fn`, which CPython documents as
     unsafe in the presence of threads. `run_submission` therefore executes cases
     serially — do not reintroduce a thread pool around this without first moving
     the limits off `preexec_fn`.
     """
-    for res_id, cap in (
-        (resource.RLIMIT_AS, _MEM_LIMIT_BYTES),
-        (resource.RLIMIT_FSIZE, _OUTPUT_LIMIT_BYTES),
-    ):
+    limits = [(resource.RLIMIT_FSIZE, _OUTPUT_LIMIT_BYTES)]
+    if cap_address_space:
+        limits.append((resource.RLIMIT_AS, _MEM_LIMIT_BYTES))
+    for res_id, cap in limits:
         if cap > 0:
             try:
                 resource.setrlimit(res_id, (cap, cap))
@@ -168,10 +179,16 @@ def _apply_limits() -> None:
                 pass
 
 
-# preexec_fn (not a shell wrapper) so subprocess still raises FileNotFoundError
-# when the runtime is missing — that distinction drives the ERROR (inconclusive)
-# verdict. None on non-POSIX, where these limits aren't available.
-_PREEXEC = _apply_limits if resource is not None else None
+def _preexec_for(cap_address_space: bool):
+    """Build the child's pre-exec hook, or None where rlimits don't exist.
+
+    preexec_fn (not a shell wrapper) so subprocess still raises FileNotFoundError
+    when the runtime is missing — that distinction drives the ERROR (inconclusive)
+    verdict.
+    """
+    if resource is None:  # non-POSIX
+        return None
+    return lambda: _apply_limits(cap_address_space)
 
 # Give each child its own session/process group so a timeout can kill the whole
 # tree (see `_kill_tree`). POSIX-only, like the rlimits above.
@@ -199,7 +216,14 @@ def _kill_tree(proc: subprocess.Popen) -> None:
         pass
 
 
-def _run_case(run_cmd: list[str], workdir: Path, tc: TestCase, limit: float) -> TestOutcome | str:
+def _run_case(
+    run_cmd: list[str],
+    workdir: Path,
+    tc: TestCase,
+    limit: float,
+    *,
+    cap_address_space: bool = True,
+) -> TestOutcome | str:
     """Run one test case. Returns a TestOutcome, or an infra-error string when the
     runtime itself is missing (inconclusive — the caller must not treat it as a
     candidate failure).
@@ -220,7 +244,7 @@ def _run_case(run_cmd: list[str], workdir: Path, tc: TestCase, limit: float) -> 
                 stdin=subprocess.PIPE,
                 stdout=out_f,
                 stderr=err_f,
-                preexec_fn=_PREEXEC,
+                preexec_fn=_preexec_for(cap_address_space),
                 start_new_session=_NEW_SESSION,
             )
         except FileNotFoundError as exc:
@@ -326,7 +350,9 @@ def run_submission(
         # a candidate writing fixed-name files can't race itself.
         outcomes: list[TestOutcome] = []
         for tc in test_cases:
-            result = _run_case(run_cmd, workdir, tc, limit)
+            result = _run_case(
+                run_cmd, workdir, tc, limit, cap_address_space=lang.address_space_capped
+            )
             if isinstance(result, str):  # runtime missing — inconclusive
                 return ExecutionReport(language, None, [], infra_error=result)
             outcomes.append(result)
