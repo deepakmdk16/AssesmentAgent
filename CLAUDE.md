@@ -101,9 +101,10 @@ walks them. Before committing or pushing:
    is **not** evidence any of them passed. Baselines live in STATUS.md.
 5. **Open-items checkpoint** — before committing, confirm [STATUS.md](STATUS.md)
    still reflects reality: remove any item this change closes and add any new
-   follow-up it opens. STATUS.md tracks only pending work; history is `git log`, so
-   a detailed commit message is the changelog. Treat a stale open-items list as a
-   failed gate.
+   follow-up it opens. STATUS.md tracks pending work plus the eval baselines (the
+   one reference exception — checkpoint #4 needs them to tell a regression from
+   normal variance); history is `git log`, so a detailed commit message is the
+   changelog. Treat a stale open-items list as a failed gate.
 
 ## Guardrails specific to this repo
 
@@ -125,10 +126,13 @@ walks them. Before committing or pushing:
 
 ## Status & next
 
-Pending / next work lives in [STATUS.md](STATUS.md) — a short, **open-items-only**
-list. Feature *history* is `git log` (commits are per-slice and detailed), not a
+Pending / next work lives in [STATUS.md](STATUS.md) — a short **pending-work**
+list, plus the eval baselines as its one reference section (checkpoint #4 reads
+them). Feature *history* is `git log` (commits are per-slice and detailed), not a
 changelog file. **Pre-push checkpoint #5 applies to STATUS.md:** update it in the
 same commit that opens or closes an item.
+
+Starting a fresh session? STATUS.md's first item is the recommended next task.
 
 ## Phase 2 (delivery paths)
 
