@@ -10,28 +10,19 @@ CONVENTIONS.md.
 ## Open items
 
 ### Next up: global (cross-repo) Claude-setup fixes
-Found in the 2026-07-17 audit, deliberately deferred: these live in `~/.claude/`
-and are **shared with `assessment-platform`**, so they need their own session and
-a look at that repo before changing shared hooks.
+Found in the 2026-07-17 audit; these live in `~/.claude/` and are **shared with
+`assessment-platform`**. The guard-hook/config gaps below are now fixed (guard.py
+`rm -fr`/`rm -r -f`/`rm -Rf` all ask and root-target deletes deny — order- and
+separation-independent, proven by `~/.claude/hooks/guard_probe.py`; Read of a
+secret path now asks via the wired-in Read matcher; the stray
+`~/.claude/.claude.json` is deleted). The home-wide Read grant was **checked and
+is not present** in `assessment-platform` — it carries only a `~/.claude/**`-scoped
+grant, not the machine-wide `Read(//Users/madiredeepakkumar/**)`. Remaining:
 
-- `~/.claude/hooks/guard.py` misses `rm -fr` and `rm -r -f` — proven by probe,
-  both get **no** prompt. Its risky-tier regex requires `r` before `f` in one
-  flag cluster. (The catastrophic tier for `/` and `~` *does* still catch them,
-  so this is the ordinary-path "ask" that leaks, not the worst case.) Add a probe
-  script alongside the fix so the patterns stay proven rather than assumed.
-- `guard.py` guards Bash-reading-`.env` and Write/Edit-of-secrets but **not the
-  Read tool** — add a Read matcher reusing its existing `sensitive` list.
-- Stray `~/.claude/.claude.json` (headroom-only, wrong directory, loaded by
-  nothing) — delete; the real config is `~/.claude.json`.
 - Global `CLAUDE.md` §7 mandates serena-before-Read, but serena needs an explicit
   `activate_project` first, so the mandated call fails once per session and the
   natural recovery is the whole-file Read §7 exists to prevent. Worked around
   repo-side (see this repo's CLAUDE.md); the global rule should say so too.
-- **Check `assessment-platform` for the same home-wide Read grant.** This repo's
-  `.claude/settings.local.json` had `Read(//Users/madiredeepakkumar/**)` — every
-  `.env`, `~/.ssh`, `~/.aws` on the machine. Fixed here, but that file is
-  **globally git-ignored**, so the fix is machine-local and did NOT travel with
-  PR #8. The sibling repo may carry the same grant.
 
 ### Rate limiting on the API (not started — decide the approach first)
 `/assessments` and `/run` execute submitted code, and `adversarial: true` spends
