@@ -33,6 +33,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from .constants import CORRECTNESS, OFFLINE_ENGINE, PERFORMANCE
+from .llm import client_timeout_s
 from .loader import question_from_dict
 from .pricing import Usage
 from .questions import TestCase
@@ -403,7 +404,9 @@ def _draft_spec(
 ) -> tuple[DraftSpec, Usage]:
     import anthropic
 
-    client = anthropic.Anthropic()
+    # The brief is interviewer-supplied (trusted), so unlike the judge and the
+    # adversarial probe there is no untrusted-input fence here — only the timeout.
+    client = anthropic.Anthropic(timeout=client_timeout_s())
 
     hints = [f"LANGUAGE (for the reference solution): {language}"]
     if difficulty:

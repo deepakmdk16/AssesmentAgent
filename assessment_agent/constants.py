@@ -29,3 +29,9 @@ OFFLINE_ENGINE = "offline-heuristic"
 # submission did not execute (compile/runtime failure) — a decided FAIL, so the
 # LLM call would add nothing. See agent.assess.
 SKIPPED_ENGINE = "skipped"
+# Quality-judge engine label when the judge was attempted but failed (model
+# refusal, invalid/truncated JSON, network). Distinct from SKIPPED_ENGINE: there
+# the call was deliberately not made; here it was made and did not produce a
+# usable answer. Either way the verdict — already decided from execution alone —
+# is unaffected. See agent.assess.
+FAILED_ENGINE = "unavailable"

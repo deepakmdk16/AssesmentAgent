@@ -209,39 +209,47 @@ def _emit_report(
 
     from .report import build_report_pdf
 
-    if args.report:
+    # A PDF the user didn't ask for is scaffolding for the email; clean it up.
+    keep = bool(args.report)
+    if keep:
         report_path = Path(args.report)
     else:
         fd, tmp = tempfile.mkstemp(prefix="assess_", suffix=".pdf")
         os.close(fd)
         report_path = Path(tmp)
 
-    build_report_pdf(result, report_path, candidate=candidate)
-    if args.report:
-        print(f"Wrote PDF report: {report_path}")
+    try:
+        build_report_pdf(result, report_path, candidate=candidate)
+        if keep:
+            print(f"Wrote PDF report: {report_path}")
 
-    if args.email or args.email_dry_run:
-        from .mailer import default_recipient, send_report
+        if args.email or args.email_dry_run:
+            from .mailer import default_recipient, send_report
 
-        recipient = args.to or default_recipient()
-        try:
-            msg = send_report(
-                report_path,
-                candidate=candidate,
-                verdict=result.verdict,
-                score_pct=result.score_pct,
-                recipient=recipient,
-                dry_run=args.email_dry_run,
-            )
-        except RuntimeError as exc:
-            parser.error(str(exc))
-        if args.email_dry_run:
-            print(
-                f"[dry-run] Would email {candidate}'s report to {recipient} "
-                f"(subject: {msg['Subject']!r}); not sent."
-            )
-        else:
-            print(f"Emailed {candidate}'s report to {recipient}.")
+            try:
+                recipient = args.to or default_recipient()
+                msg = send_report(
+                    report_path,
+                    candidate=candidate,
+                    verdict=result.verdict,
+                    score_pct=result.score_pct,
+                    recipient=recipient,
+                    dry_run=args.email_dry_run,
+                )
+            except RuntimeError as exc:
+                # Covers a missing recipient, missing credentials, and any SMTP
+                # failure (mailer normalises them all to RuntimeError).
+                parser.error(str(exc))
+            if args.email_dry_run:
+                print(
+                    f"[dry-run] Would email {candidate}'s report to {recipient} "
+                    f"(subject: {msg['Subject']!r}); not sent."
+                )
+            else:
+                print(f"Emailed {candidate}'s report to {recipient}.")
+    finally:
+        if not keep:
+            report_path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

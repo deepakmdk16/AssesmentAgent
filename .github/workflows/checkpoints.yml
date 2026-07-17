@@ -1,0 +1,37 @@
+
+# The deterministic gate, enforced on the remote.
+#
+# `scripts/checkpoints.sh` is also wired as the local pre-push hook, but that is
+# opt-in (`bash scripts/install-hooks.sh` per clone) and bypassable with
+# `git push --no-verify`. Running the SAME script here means the gate holds even
+# when the hook was never installed — and there is exactly one definition of
+# "passing" to keep in sync.
+name: checkpoints
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checkpoints:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.10
+
+      - name: Sync dependencies
+        run: uv sync --all-extras --dev
+
+      # The submissions the runner executes are Python/JS; the checkpoint script
+      # runs pytest, ruff, mypy and the secret scan. Node is preinstalled on the
+      # runner, so the JS language test finds its runtime.
+      - name: Run checkpoints
+        run: bash scripts/checkpoints.sh

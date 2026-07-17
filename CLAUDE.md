@@ -3,6 +3,14 @@
 Project-specific guidance. Merge with the global `~/.claude/CLAUDE.md`; where
 this file is silent, the global rules apply.
 
+## Before you navigate code here
+
+Global `CLAUDE.md` §7 says to reach for serena's `find_symbol` before Read/grep.
+In this repo serena needs an explicit `activate_project("AssesmentAgent")` first
+— the `ide-assistant` context does not auto-activate, so the *first* serena call
+of a session errors and the natural recovery is exactly the whole-file Read that
+§7 exists to prevent. Activate once, then navigate.
+
 ## What this is
 
 An agent that grades a candidate's coding-interview submission: runs the code
@@ -36,12 +44,39 @@ See [README.md](README.md) for the full flow, and
 
 ## Architecture (where things live)
 
-- `runner.py` — executes submissions per language (deterministic; keep it that
-  way — do **not** hand code execution to the model).
-- `judge.py` — LLM quality judge (Claude) with an offline heuristic fallback.
+Every module is listed here, and `scripts/checkpoints.sh` enforces that — a new
+module that isn't mentioned fails the gate. Keep the one-liners short; depth
+belongs in the module docstring.
+
+**Deterministic core** (never hand any of this to the model):
+- `runner.py` — executes submissions per language. Cases run serially; per-child
+  rlimits go on via `preexec_fn`, so do **not** wrap it in threads (see its
+  docstring).
+- `questions.py` — built-in questions + `validate_question` invariants.
+- `loader.py` — validates an interviewer-supplied question JSON (Phase 2).
+- `languages.py` — the per-language compile/run registry.
+- `agent.py` — orchestration + the score-based verdict.
+- `constants.py` — `Verdict` / `Category` / engine labels as `Literal`s.
+
+**LLM surfaces** (all three report; none may gate a verdict):
+- `judge.py` — quality judge, with an offline heuristic fallback.
+- `adversarial.py` — advisory edge-case probe (opt-in).
+- `authoring.py` — drafts a question from a brief; the oracle is the *executed*
+  reference, never the model's arithmetic.
 - `rubric.py` + `prompts/` — the judge's instructions as editable markdown
   modules ("skills as repo modules", not the Anthropic Skills feature).
-- `agent.py` — orchestration + verdict. `pricing.py` — token/cost estimation.
+- `llm.py` — shared call-site concerns: timeouts + untrusted-input fencing.
+
+**Delivery & reporting:**
+- `cli.py` — the `assess` CLI. `api.py` — the stateless HTTP intake worker.
+- `report.py` — PDF rendering. `mailer.py` — Gmail SMTP delivery.
+- `pricing.py` — token/cost estimation.
+
+**Evals** (each has an anchored harness + a unit-tested logic half):
+- `eval.py` / `eval_cases.py` — the judge (`assess-eval`).
+- `draft_eval.py` / `draft_eval_cases.py` — authoring (`assess-draft-eval`).
+- `adversarial_eval.py` / `adversarial_eval_cases.py` — the probe
+  (`assess-adversarial-eval`).
 
 ## Pre-push checkpoints (in addition to the global §6 gates)
 
@@ -59,8 +94,11 @@ walks them. Before committing or pushing:
 3. **The live Claude judge path has been smoke-tested with a real
    `ANTHROPIC_API_KEY`** before relying on it or moving to Phase 2 — the offline
    heuristic only exercises the pipeline, not the real model call.
-4. `uv run assess-eval` with a real key — the deterministic anchors
-   (strong→PASS, buggy→FAIL) must hold before trusting a model/config.
+4. The eval harnesses with a real key — re-run after **any** model/prompt change.
+   There are three, one per LLM surface: `assess-eval` (judge; the deterministic
+   anchors strong→PASS, buggy→FAIL must hold), `assess-draft-eval` (authoring),
+   and `assess-adversarial-eval` (probe). Offline they SKIP, so a green `pytest`
+   is **not** evidence any of them passed. Baselines live in STATUS.md.
 5. **Open-items checkpoint** — before committing, confirm [STATUS.md](STATUS.md)
    still reflects reality: remove any item this change closes and add any new
    follow-up it opens. STATUS.md tracks only pending work; history is `git log`, so
@@ -72,8 +110,14 @@ walks them. Before committing or pushing:
 - **Never commit an `ANTHROPIC_API_KEY`** or any secret (incl. SMTP creds — the
   Gmail app password in `SMTP_USERNAME`/`SMTP_PASSWORD`). Keys come from the
   environment only.
-- Executing candidate code is untrusted input — the runner protects only with a
-  timeout. Do not weaken that, and note the sandboxing gap in any production work.
+- Executing candidate code is untrusted input. The exact protections (and the
+  gaps they do **not** close) are documented once, in `runner.py`'s module
+  docstring — read it there rather than trusting a summary here; this line used
+  to restate them and went stale. Do not weaken them, and note the sandboxing gap
+  in any production work.
+- Report delivery is a privacy surface: a report carries the candidate's code and
+  verdict, so the recipient must be explicit. There is deliberately no built-in
+  fallback address — see `mailer.py`.
 - The verdict is score-based: `PASS` iff the weighted test score meets the
   question's `pass_threshold`, else `FAIL` (`ERROR` only when the code couldn't
   be run). Code quality is reported but must **not** gate the verdict. A wrong

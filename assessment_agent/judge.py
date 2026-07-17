@@ -20,14 +20,18 @@ pipeline is testable with no key.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass
 
 from pydantic import BaseModel, Field
 
-from .constants import OFFLINE_ENGINE
+from .constants import FAILED_ENGINE, OFFLINE_ENGINE
+from .llm import client_timeout_s, wrap_untrusted
 from .pricing import Usage
 from .rubric import SYSTEM_PROMPT
+
+logger = logging.getLogger(__name__)
 
 
 class CriterionScore(BaseModel):
@@ -58,6 +62,29 @@ def skipped_assessment() -> QualityAssessment:
         strengths=[],
         weaknesses=[],
         summary="Quality assessment skipped: the submission did not execute (compile/runtime failure).",
+    )
+
+
+def failed_assessment(reason: str) -> QualityAssessment:
+    """A placeholder used when the judge ran but could not produce a usable
+    answer (refusal, invalid/truncated JSON, network error).
+
+    Quality never gates the verdict (CONVENTIONS.md §1), so a judge failure must
+    degrade to a reported non-answer rather than propagate — otherwise the
+    exception would gate the verdict harder than any score could, discarding a
+    grade the deterministic runner had already decided. Mirrors the same
+    degradation in `adversarial.probe_adversarial`.
+    """
+    return QualityAssessment(
+        criteria=[],
+        overall_score=1.0,
+        time_complexity="unknown",
+        meets_time_constraints=False,
+        strengths=[],
+        weaknesses=[],
+        summary=(
+            f"Quality assessment unavailable — the judge failed (verdict unaffected): {reason}"
+        ),
     )
 
 
@@ -134,12 +161,21 @@ def assess_quality(
     execution_summary: str,
     performance_ok: bool,
 ) -> tuple[QualityAssessment, str, Usage | None]:
-    """Return (assessment, engine, usage). usage is None on the offline path."""
+    """Return (assessment, engine, usage). usage is None on the offline path.
+
+    Never raises. Quality is reported but must never gate the verdict
+    (CONVENTIONS.md §1), so a judge failure degrades to `failed_assessment` —
+    the caller's verdict, already decided from execution alone, stands.
+    """
     if os.environ.get("ANTHROPIC_API_KEY"):
         config = JudgeConfig.from_env()
-        assessment, usage = _assess_with_claude(
-            config, question_prompt, constraints, language, source, execution_summary
-        )
+        try:
+            assessment, usage = _assess_with_claude(
+                config, question_prompt, constraints, language, source, execution_summary
+            )
+        except Exception as exc:
+            logger.warning("quality judge failed (verdict unaffected): %s", exc)
+            return failed_assessment(str(exc)), FAILED_ENGINE, None
         return assessment, config.engine_label, usage
     return _assess_offline(source, execution_summary, performance_ok), OFFLINE_ENGINE, None
 
@@ -154,7 +190,7 @@ def _assess_with_claude(
 ) -> tuple[QualityAssessment, Usage]:
     import anthropic
 
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic(timeout=client_timeout_s())
 
     user_content = (
         f"PROBLEM STATEMENT:\n{question_prompt}\n\n"
@@ -162,7 +198,8 @@ def _assess_with_claude(
         f"LANGUAGE: {language}\n\n"
         f"AUTOMATED TEST RESULTS (ground truth for correctness and timing; a TLE "
         f"marks a case that exceeded the time limit):\n{execution_summary}\n\n"
-        f"CANDIDATE SUBMISSION:\n```{language}\n{source}\n```"
+        f"CANDIDATE SUBMISSION:\n"
+        + wrap_untrusted("candidate_submission", f"```{language}\n{source}\n```")
     )
 
     output_config: dict = {"format": {"type": "json_schema", "schema": _QUALITY_SCHEMA}}

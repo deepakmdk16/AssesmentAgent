@@ -158,6 +158,9 @@ def build_report_pdf(
         story.append(Paragraph(escape(text), s["body"]))
 
     def bullet(text: str, marker: str = "•") -> None:
+        """Unlike `body`/`h2`, this does NOT escape — callers pass markup (e.g.
+        <b>…</b> around an escaped fragment). Every caller must therefore escape
+        its own interpolated values."""
         story.append(Paragraph(text, s["bullet"], bulletText=marker))
 
     def code_box(text: str) -> None:

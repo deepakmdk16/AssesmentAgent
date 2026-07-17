@@ -2,7 +2,9 @@ import json
 
 import pytest
 
-from assessment_agent.judge import _parse_assessment
+from assessment_agent import judge
+from assessment_agent.constants import FAILED_ENGINE
+from assessment_agent.judge import _parse_assessment, assess_quality
 
 
 def _payload(score, overall):
@@ -38,3 +40,40 @@ def test_valid_scores_pass_through():
 def test_truncated_json_raises_with_hint():
     with pytest.raises(RuntimeError, match="truncated"):
         _parse_assessment('{"criteria": [', "max_tokens")
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        RuntimeError("Judge refused: policy"),
+        RuntimeError("Judge returned invalid JSON: boom"),
+        TimeoutError("read timed out"),
+        ConnectionError("network down"),
+    ],
+)
+def test_judge_failure_degrades_and_never_raises(monkeypatch, exc):
+    """Quality is reported but must never gate the verdict (CONVENTIONS.md §1).
+
+    An exception escaping the judge would gate it harder than any score could —
+    it discards a grade the deterministic runner already decided. So every judge
+    failure mode has to come back as a reported non-answer.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+    def _boom(*args, **kwargs):
+        raise exc
+
+    monkeypatch.setattr(judge, "_assess_with_claude", _boom)
+
+    assessment, engine, usage = assess_quality(
+        question_prompt="p",
+        constraints="c",
+        language="python",
+        source="print(1)",
+        execution_summary="Weighted score: 100%.",
+        performance_ok=True,
+    )
+    assert engine == FAILED_ENGINE
+    assert usage is None
+    assert "unavailable" in assessment.summary
+    assert str(exc) in assessment.summary
