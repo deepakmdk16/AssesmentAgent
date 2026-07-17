@@ -77,7 +77,8 @@ Before committing or pushing:
 
 ## Status & next steps
 
-**Slice 11 Phase A done (candidate run endpoints, 2026-07-16).** Two synchronous,
+**Slice 11 Phase A done + MERGED (candidate run endpoints, 2026-07-16).** PR #7 →
+`main` (`9b9451e`); the platform's companion half is its PR #9. Two synchronous,
 **non-grading** execution endpoints backing the platform's candidate editor. Neither
 calls an LLM, produces a verdict, or records a job — the boundary holds: grading is
 still only `POST /assessments`.
@@ -93,8 +94,14 @@ still only `POST /assessments`.
 - Both reuse `runner.run_once` / `run_submission`, so compilation, the language-scaled
   time limit and the child resource caps behave exactly as in a graded run.
 - Verified: pytest 115 (+15 new, executing real code), ruff+mypy clean.
+- **LIVE-VERIFIED (2026-07-16):** driven end-to-end from the platform's candidate editor
+  against a real `assess-api` — a candidate ran code against their own stdin and against
+  the full suite, saw pass/fail counts only, and neither run consumed their single
+  submission attempt. Confirmed the case **names** never reach the candidate (the
+  platform drops them on top of this endpoint's redaction).
 
-**Draft robustness (Slice 12 agent half, 2026-07-16).** `draft_question` now retries
+**Draft robustness (Slice 12 agent half, 2026-07-16, merged in the same PR #7).**
+`draft_question` now retries
 while the draft comes back unusable (`ASSESS_DRAFT_ATTEMPTS`, default 2). Drafting is
 stochastic, so a reference that won't compile is usually a one-off and asking again
 tends to work; a genuinely ambiguous brief still fails every attempt and the warnings
