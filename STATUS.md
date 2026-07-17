@@ -7,14 +7,18 @@ Durable architecture / boundary / invariants live in CLAUDE.md + CONVENTIONS.md.
 
 ## Open items
 
-- **Adversarial-gen eval (next).** The drafting eval is live and baselined —
-  `assess-draft-eval` ([draft_eval.py]) drafts a fixed set of briefs and asserts each
-  is a usable, validated question whose own reference grades PASS 100% (offline it
-  SKIPs; logic covered by `tests/test_draft_eval.py`). **Baseline 3/3 on
-  claude-sonnet-4-6 (2026-07-17):** two_sum 7 corr+1 perf, reverse_words 7+1,
-  count_islands 9+1, each reference PASS 100%. Re-run after a model/prompt change.
-  Still TODO: a parallel eval for adversarial test-gen (adversarial.py), which is
-  likewise only live-smoke-tested today.
+- **LLM-surface evals — drafting baselined; adversarial needs one baseline run.**
+  Both drafting and adversarial-gen now have anchored eval harnesses (offline they
+  SKIP — no heuristic; logic covered by `tests/test_draft_eval.py` +
+  `tests/test_adversarial_eval.py`, in the gate).
+  - **Drafting** — `assess-draft-eval` ([draft_eval.py]): each brief must draft into a
+    valid question whose own reference grades PASS 100%. **Baseline 3/3 on
+    claude-sonnet-4-6 (2026-07-17):** two_sum 7+1, reverse_words 7+1, count_islands 9+1.
+  - **Adversarial gen** — `assess-adversarial-eval` ([adversarial_eval.py]): the probe
+    runs against known-correct references and must generate cases yet report ZERO
+    findings (a finding on a correct solution = a false positive). **TODO: one live-key
+    baseline run to record the anchor.**
+  Re-run both after any model/prompt change.
 - **Candidate-feedback agent (cross-repo, not yet chosen).** Once the platform can
   surface it — actionable feedback to candidates. Spans both repos.
 - **Multiple examples per question (deferred).** `Question`/loader/report hold a

@@ -16,6 +16,7 @@ dependencies = [
 assess = "assessment_agent.cli:main"
 assess-eval = "assessment_agent.eval:main"
 assess-draft-eval = "assessment_agent.draft_eval:main"
+assess-adversarial-eval = "assessment_agent.adversarial_eval:main"
 assess-api = "assessment_agent.api:main"
 
 [dependency-groups]
