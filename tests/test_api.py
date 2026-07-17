@@ -38,6 +38,15 @@ def _job(candidate="Jane Doe", **extra) -> dict:
     }
 
 
+class _FakeResponse:
+    """Minimal stand-in for an httpx response. `_post_callback` inspects
+    `status_code` to decide whether to retry, so a stub must carry one."""
+
+    def __init__(self, status_code: int = 200, text: str = "") -> None:
+        self.status_code = status_code
+        self.text = text
+
+
 def test_health(client):
     assert client.get("/health").json() == {"status": "ok"}
 
@@ -53,10 +62,99 @@ def test_auth_rejects_missing_or_wrong_token_when_configured(client, monkeypatch
     assert ok.status_code == 202
 
 
+def test_auth_is_fail_closed_when_unconfigured(client, monkeypatch):
+    """Forgetting ASSESS_API_TOKEN must not silently publish an endpoint that
+    executes submitted code. Unset = 503, not "auth off"."""
+    monkeypatch.delenv("ASSESS_API_TOKEN", raising=False)
+    monkeypatch.delenv("ASSESS_AUTH_DISABLED", raising=False)
+    posts = ["/assessments", "/run", "/run/tests", "/questions/draft"]
+    responses = [(p, client.post(p, json={})) for p in posts]
+    responses.append(("/assessments/{id}", client.get("/assessments/whatever")))
+
+    for path, resp in responses:
+        assert resp.status_code == 503, f"{path} was not fail-closed"
+        assert "ASSESS_API_TOKEN" in resp.json()["detail"]
+
+
+def test_health_needs_no_auth(client, monkeypatch):
+    # Liveness must work before the operator has configured anything.
+    monkeypatch.delenv("ASSESS_API_TOKEN", raising=False)
+    monkeypatch.delenv("ASSESS_AUTH_DISABLED", raising=False)
+    assert client.get("/health").status_code == 200
+
+
+def test_polling_a_job_requires_the_token(client, monkeypatch):
+    """GET /assessments/{id} returns each case's input/expected/actual — the
+    answer key. An unguessable job_id is not an access control."""
+    monkeypatch.setenv("ASSESS_API_TOKEN", "s3cret")
+    auth = {"X-Assess-Token": "s3cret"}
+    job_id = client.post("/assessments", json=_job(), headers=auth).json()["job_id"]
+
+    assert client.get(f"/assessments/{job_id}").status_code == 401
+    assert client.get(f"/assessments/{job_id}", headers=auth).status_code == 200
+
+
+def test_oversized_code_is_rejected(client):
+    huge = "x = 1\n" * 200_000
+    assert client.post("/assessments", json=_job() | {"code": huge}).status_code == 422
+    assert client.post("/run", json={"code": huge, "language": "python"}).status_code == 422
+
+
+def test_callback_retries_then_gives_up(client, monkeypatch):
+    """The callback is the only durable delivery path, so a transient 5xx must be
+    retried rather than silently dropped."""
+    monkeypatch.setattr(api, "_CALLBACK_ATTEMPTS", 3)
+    monkeypatch.setattr(api, "_CALLBACK_BACKOFF_S", 0.0)  # don't actually sleep
+    calls: list[str] = []
+
+    def _post(url, **kw):
+        calls.append(url)
+        return _FakeResponse(503, "upstream down")
+
+    monkeypatch.setattr(api.httpx, "post", _post)
+    resp = client.post("/assessments", json=_job(callback_url="https://platform/cb"))
+    assert resp.status_code == 202
+    assert len(calls) == 3  # retried to the cap, then gave up
+
+
+def test_callback_stops_retrying_on_4xx(client, monkeypatch):
+    """A 4xx is the platform rejecting these bytes; resending them is pointless."""
+    monkeypatch.setattr(api, "_CALLBACK_ATTEMPTS", 3)
+    monkeypatch.setattr(api, "_CALLBACK_BACKOFF_S", 0.0)
+    calls: list[str] = []
+
+    def _post(url, **kw):
+        calls.append(url)
+        return _FakeResponse(400, "bad payload")
+
+    monkeypatch.setattr(api.httpx, "post", _post)
+    client.post("/assessments", json=_job(callback_url="https://platform/cb"))
+    assert len(calls) == 1
+
+
+def test_callback_succeeds_after_a_transient_failure(client, monkeypatch):
+    monkeypatch.setattr(api, "_CALLBACK_ATTEMPTS", 3)
+    monkeypatch.setattr(api, "_CALLBACK_BACKOFF_S", 0.0)
+    calls: list[str] = []
+
+    def _post(url, **kw):
+        calls.append(url)
+        return _FakeResponse(500) if len(calls) == 1 else _FakeResponse(200)
+
+    monkeypatch.setattr(api.httpx, "post", _post)
+    client.post("/assessments", json=_job(callback_url="https://platform/cb"))
+    assert len(calls) == 2  # failed once, then delivered — no further attempts
+
+
 def test_callback_carries_token_when_configured(client, monkeypatch):
     monkeypatch.setenv("CALLBACK_TOKEN", "cbtok")
     captured: dict = {}
-    monkeypatch.setattr(api.httpx, "post", lambda url, **kw: captured.update(kw))
+
+    def _post(url, **kw):
+        captured.update(kw)
+        return _FakeResponse()
+
+    monkeypatch.setattr(api.httpx, "post", _post)
     client.post("/assessments", json=_job(callback_url="https://platform/cb"))
     assert captured["headers"].get("X-Assess-Token") == "cbtok"
 
@@ -78,7 +176,9 @@ def test_accepts_job_and_completes(client):
 
 def test_callback_receives_result(client, monkeypatch):
     sent: list[tuple[str, dict]] = []
-    monkeypatch.setattr(api, "_post_callback", lambda url, payload: sent.append((url, payload)))
+    monkeypatch.setattr(
+        api, "_post_callback", lambda job_id, url, payload: sent.append((url, payload))
+    )
 
     resp = client.post("/assessments", json=_job(callback_url="https://platform/cb"))
     assert resp.status_code == 202
@@ -129,7 +229,7 @@ def test_callback_url_ssrf_is_rejected(client, bad_url):
 def test_public_callback_url_is_accepted(client, monkeypatch):
     # A public IP (or a plain hostname) is fine — only internal targets are blocked.
     # Stub the outbound POST so the accepted job doesn't hit the real network.
-    monkeypatch.setattr(api.httpx, "post", lambda *a, **k: None)
+    monkeypatch.setattr(api.httpx, "post", lambda *a, **k: _FakeResponse())
     r = client.post("/assessments", json=_job(callback_url="http://93.184.216.34/cb"))
     assert r.status_code == 202
 
