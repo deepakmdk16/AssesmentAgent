@@ -16,8 +16,9 @@ Durable architecture / boundary / invariants live in CLAUDE.md + CONVENTIONS.md.
     claude-sonnet-4-6 (2026-07-17):** two_sum 7+1, reverse_words 7+1, count_islands 9+1.
   - **Adversarial gen** — `assess-adversarial-eval` ([adversarial_eval.py]): the probe
     runs against known-correct references and must generate cases yet report ZERO
-    findings (a finding on a correct solution = a false positive). **TODO: one live-key
-    baseline run to record the anchor.**
+    findings (a finding on a correct solution = a false positive). **Baseline 2/2 on
+    claude-sonnet-4-6 (2026-07-17):** strong + knapsack_good each probed 8, no
+    crash/timeout.
   Re-run both after any model/prompt change.
 - **Candidate-feedback agent (cross-repo, not yet chosen).** Once the platform can
   surface it — actionable feedback to candidates. Spans both repos.
