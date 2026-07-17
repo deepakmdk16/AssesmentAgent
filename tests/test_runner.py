@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import time
 import uuid
@@ -67,9 +68,10 @@ def test_time_limit_exceeded_is_flagged():
     assert "time limit" in (outcome.error or "").lower()
 
 
-def test_outcomes_preserve_input_order_under_parallelism():
-    # Correctness cases run concurrently and can finish out of order; the report
-    # must still list them in the original input order.
+def test_outcomes_preserve_input_order():
+    # Every case must appear in the report in the order it was declared, so a
+    # report card lines up with the question. (Cases run serially now — see
+    # run_submission — but the guarantee is the report's, not the scheduler's.)
     cases = tuple(TestCase(f"c{i}", f"{i}\n", str(i)) for i in range(8))
     report = run_submission(ECHO, "python", cases)
     assert [o.name for o in report.outcomes] == [f"c{i}" for i in range(8)]
@@ -77,7 +79,7 @@ def test_outcomes_preserve_input_order_under_parallelism():
 
 
 def test_mixed_correctness_and_performance_all_run_in_order():
-    # Performance cases run isolated in a second phase; positions are preserved.
+    # Categories interleave freely; each case still lands in its declared slot.
     cases = (
         TestCase("corr1", "1\n", "1", CORRECTNESS),
         TestCase("perf", "9\n", "9", PERFORMANCE),
@@ -90,6 +92,7 @@ def test_mixed_correctness_and_performance_all_run_in_order():
 
 
 @pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX-only")
+@pytest.mark.skipif(shutil.which("pgrep") is None, reason="needs pgrep to spot survivors")
 def test_timeout_kills_the_whole_process_tree_not_just_the_child():
     """A submission that forks and then hangs must not leave orphans behind.
 
