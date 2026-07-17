@@ -61,11 +61,11 @@ walks them. Before committing or pushing:
    heuristic only exercises the pipeline, not the real model call.
 4. `uv run assess-eval` with a real key — the deterministic anchors
    (strong→PASS, buggy→FAIL) must hold before trusting a model/config.
-5. **Open-items checkpoint** — before committing, confirm [ROADMAP.md](ROADMAP.md)
-   still reflects reality: any item this change completes is moved out of **Open
-   items**, and any new follow-up it creates is added there. This repo tracks
-   status in ROADMAP.md, so a commit that shifts the roadmap must update it in the
-   same commit — treat a stale open-items list as a failed gate.
+5. **Open-items checkpoint** — before committing, confirm [STATUS.md](STATUS.md)
+   still reflects reality: remove any item this change closes and add any new
+   follow-up it opens. STATUS.md tracks only pending work; history is `git log`, so
+   a detailed commit message is the changelog. Treat a stale open-items list as a
+   failed gate.
 
 ## Guardrails specific to this repo
 
@@ -79,13 +79,12 @@ walks them. Before committing or pushing:
   be run). Code quality is reported but must **not** gate the verdict. A wrong
   answer or a TLE forfeits that case's points — it must never silently earn them.
 
-## Status & roadmap
+## Status & next
 
-Current status, the slice-by-slice changelog, and the open-items backlog live in
-[ROADMAP.md](ROADMAP.md) — moved out of this file so CLAUDE.md stays lean and
-loads cheaply every session. **Pre-push checkpoint #5 applies to ROADMAP.md:**
-update it in the same commit that shifts the work; trim merged slices to one line
-(git history holds the detail).
+Pending / next work lives in [STATUS.md](STATUS.md) — a short, **open-items-only**
+list. Feature *history* is `git log` (commits are per-slice and detailed), not a
+changelog file. **Pre-push checkpoint #5 applies to STATUS.md:** update it in the
+same commit that opens or closes an item.
 
 ## Phase 2 (delivery paths)
 
