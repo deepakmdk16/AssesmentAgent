@@ -7,6 +7,12 @@ Durable architecture / boundary / invariants live in CLAUDE.md + CONVENTIONS.md.
 
 ## Open items
 
+- **Drafting eval — scaffolded, needs a live-key baseline run.** `assess-draft-eval`
+  ([draft_eval.py]) drafts a fixed set of briefs and asserts each is a usable,
+  validated question whose own reference grades PASS 100%. Offline it SKIPs (no
+  heuristic); the harness logic is covered by `tests/test_draft_eval.py`. TODO: run
+  it once with a real key to record a baseline (like the judge eval's anchors), and
+  add an adversarial-gen eval alongside it.
 - **Candidate-feedback agent (cross-repo, not yet chosen).** Once the platform can
   surface it — actionable feedback to candidates. Spans both repos.
 - **Multiple examples per question (deferred).** `Question`/loader/report hold a
