@@ -1,0 +1,54 @@
+# The three eval harnesses exercise the real Claude API, so they cost money per
+# run and the offline `pytest` gate never touches them — a regression in an LLM
+# surface (judge / drafting / adversarial) could ship unnoticed. This job runs
+# them on a weekly schedule and on demand, with the key from secrets, so a
+# regression surfaces. Baselines live in STATUS.md.
+name: evals
+
+on:
+  workflow_dispatch: # run on demand from the Actions tab
+  schedule:
+    - cron: '0 9 * * 1' # Mondays 09:00 UTC
+
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    # Never run on a fork: the schedule would fail the key guard below anyway
+    # (secrets aren't shared with forks), so don't even start it there.
+    if: github.repository == 'deepakmdk16/AssesmentAgent'
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Fail loudly rather than green: without the key the harnesses fall back to
+      # the offline heuristic and prove nothing, which would look like a pass.
+      - name: Require ANTHROPIC_API_KEY
+        run: |
+          if [ -z "${ANTHROPIC_API_KEY}" ]; then
+            echo "::error::ANTHROPIC_API_KEY secret is not set — evals would run offline and prove nothing."
+            exit 1
+          fi
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.10
+
+      - name: Sync dependencies
+        run: uv sync --all-extras --dev
+
+      # Each harness exits non-zero on a regression against its anchored
+      # baseline, so a failure here fails the job. Node is preinstalled for any
+      # JS reference execution the drafting eval triggers.
+      - name: Judge eval (assess-eval)
+        run: uv run assess-eval
+
+      - name: Drafting eval (assess-draft-eval)
+        run: uv run assess-draft-eval
+
+      - name: Adversarial eval (assess-adversarial-eval)
+        run: uv run assess-adversarial-eval

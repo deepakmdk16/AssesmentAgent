@@ -24,12 +24,6 @@ grant, not the machine-wide `Read(//Users/madiredeepakkumar/**)`. Remaining:
   natural recovery is the whole-file Read §7 exists to prevent. Worked around
   repo-side (see this repo's CLAUDE.md); the global rule should say so too.
 
-### Rate limiting on the API (not started — decide the approach first)
-`/assessments` and `/run` execute submitted code, and `adversarial: true` spends
-API money per call. Fail-closed auth now gates *who* can reach them, but there is
-no per-caller quota. Needs a dependency (e.g. slowapi) or a reverse proxy —
-that choice is the blocker, not the code.
-
 ### Sandboxing the runner (the biggest production gap)
 Today: a per-run timeout, an output cap (`RLIMIT_FSIZE`), a process-group kill so
 a timeout takes the whole tree, and an address-space cap (`RLIMIT_AS`) that
@@ -51,14 +45,6 @@ N megabytes / M processes":
   `Language.address_space_capped` (found by CI's first run, 2026-07-17). What it
   still buys: a runaway CPython allocation on Linux, and little else — it is
   silently ignored on macOS.
-
-### The eval harnesses only ever run on one machine
-The Java bug CI caught existed because a code path had never executed. The three
-eval harnesses are one blind spot of the same shape: they SKIP without an API
-key, so CI never exercises them and they only run on a dev Mac, by hand. Not
-urgent, and running them in CI costs real money per run — but if they break,
-nothing will say so. Consider a scheduled/manual-dispatch job with the key in
-secrets.
 
 ## Other pending work
 

@@ -69,6 +69,12 @@ belongs in the module docstring.
 
 **Delivery & reporting:**
 - `cli.py` — the `assess` CLI. `api.py` — the stateless HTTP intake worker.
+- `ratelimit.py` — in-process fixed-window rate limiter for the API's
+  code-execution / LLM-cost endpoints (`/run`, `/run/tests`, `/assessments`,
+  `/questions/draft`).
+- `signing.py` — HMAC-SHA256 body signing/verification for the platform↔agent
+  link (mirrored verbatim in the platform repo; inbound requests + the outbound
+  callback are signed when the signing secrets are configured).
 - `report.py` — PDF rendering. `mailer.py` — Gmail SMTP delivery.
 - `pricing.py` — token/cost estimation.
 

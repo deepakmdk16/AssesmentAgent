@@ -12,8 +12,18 @@ from __future__ import annotations
 
 import pytest
 
+from assessment_agent.ratelimit import limiter
+
 
 @pytest.fixture(autouse=True)
 def _auth_disabled_by_default(monkeypatch):
     monkeypatch.delenv("ASSESS_API_TOKEN", raising=False)
     monkeypatch.setenv("ASSESS_AUTH_DISABLED", "1")
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter():
+    """The limiter is a process-global singleton keyed by client IP, and the
+    TestClient's IP is constant — so without a reset, hits accumulate across the
+    whole suite and later tests would 429. Clear it before each test."""
+    limiter.reset()

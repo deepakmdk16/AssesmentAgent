@@ -221,6 +221,24 @@ with `ASSESS_API_TOKEN` unset every route returns 503 unless you explicitly set
 `ASSESS_AUTH_DISABLED=1` (dev/tests). Forgetting to configure a token must not
 leave an endpoint that runs arbitrary code open to the internet.
 
+Auth gates *who* can reach the code-execution / LLM-cost endpoints; a per-client
+rate limit caps *how hard* one caller can hammer them ([ratelimit.py](assessment_agent/ratelimit.py)).
+`/run` + `/run/tests` share one bucket, `/assessments` and `/questions/draft`
+their own; defaults are `ASSESS_RUN_RATE_LIMIT_MAX=60`, `…ASSESSMENTS…=30`,
+`…DRAFT…=10` per `ASSESS_RATE_LIMIT_WINDOW_S=60` (0 disables a bucket). Behind a
+proxy set `ASSESS_TRUST_PROXY_HEADERS=true` so the limiter keys on the forwarded
+client, not the proxy.
+
+**Body signing (defense in depth):** the bearer token travels in the clear, so
+it can't prove a request *body* wasn't altered. When `ASSESS_SIGNING_SECRET` is
+set, inbound requests must also carry an `X-Assess-Signature` (HMAC-SHA256 over
+the exact body, with a timestamp + 5-min freshness window — see
+[signing.py](assessment_agent/signing.py)); the platform signs with the same
+secret, which is **never transmitted**. Likewise the outbound callback is signed
+with `CALLBACK_SIGNING_SECRET` so the platform can verify it's us. Both are
+enforced only when their secret is configured. The module is mirrored verbatim in
+the platform repo — the two sides must agree byte for byte.
+
 `CALLBACK_TOKEN` is sent on the outbound callback so the platform can verify us.
 The callback is the only *durable* delivery path (the job map is in-memory,
 bounded, and dies with the process), so it retries with backoff and logs loudly
