@@ -52,6 +52,11 @@ belongs in the module docstring.
 - `runner.py` — executes submissions per language. Cases run serially; per-child
   rlimits go on via `preexec_fn`, so do **not** wrap it in threads (see its
   docstring).
+- `sandbox.py` — wraps each untrusted child's argv in an OS sandbox (nsjail:
+  no network, dropped caps, cgroup memory+pids) selected by `ASSESS_SANDBOX`;
+  a no-op passthrough where none is configured (macOS/dev/CI). The real
+  isolation layer above `runner.py`'s best-effort rlimits; on by default in the
+  Dockerfile.
 - `questions.py` — built-in questions + `validate_question` invariants.
 - `loader.py` — validates an interviewer-supplied question JSON (Phase 2).
 - `languages.py` — the per-language compile/run registry.
