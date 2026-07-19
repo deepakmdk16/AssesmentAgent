@@ -46,14 +46,6 @@ N megabytes / M processes":
   still buys: a runaway CPython allocation on Linux, and little else — it is
   silently ignored on macOS.
 
-### The eval harnesses only ever run on one machine
-The Java bug CI caught existed because a code path had never executed. The three
-eval harnesses are one blind spot of the same shape: they SKIP without an API
-key, so CI never exercises them and they only run on a dev Mac, by hand. Not
-urgent, and running them in CI costs real money per run — but if they break,
-nothing will say so. Consider a scheduled/manual-dispatch job with the key in
-secrets.
-
 ## Other pending work
 
 - **Candidate-feedback agent (cross-repo, not yet chosen).** Once the platform can
