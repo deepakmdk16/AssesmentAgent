@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from assessment_agent import api
+from assessment_agent import api, signing
 from assessment_agent.api import app
 
 EXAMPLE = Path(__file__).resolve().parent.parent / "examples" / "sum_of_n.json"
@@ -186,6 +186,49 @@ def test_callback_carries_token_when_configured(client, monkeypatch):
     monkeypatch.setattr(api.httpx, "post", _post)
     client.post("/assessments", json=_job(callback_url="https://platform/cb"))
     assert captured["headers"].get("X-Assess-Token") == "cbtok"
+
+
+def test_signature_required_when_configured(client, monkeypatch):
+    monkeypatch.setenv("ASSESS_SIGNING_SECRET", "sign-me")
+    body = _job()
+
+    # With signing on, a request that carries no signature is rejected...
+    assert client.post("/assessments", json=body).status_code == 401
+
+    # ...one signed over the exact bytes sent is accepted...
+    raw = json.dumps(body).encode()
+    headers = {"Content-Type": "application/json"}
+    ok = client.post(
+        "/assessments",
+        content=raw,
+        headers={**headers, signing.SIGNATURE_HEADER: signing.sign("sign-me", raw)},
+    )
+    assert ok.status_code == 202
+
+    # ...and one signed under the wrong secret is not.
+    bad = client.post(
+        "/assessments",
+        content=raw,
+        headers={**headers, signing.SIGNATURE_HEADER: signing.sign("wrong-secret", raw)},
+    )
+    assert bad.status_code == 401
+
+
+def test_callback_is_signed_when_configured(client, monkeypatch):
+    monkeypatch.setenv("CALLBACK_SIGNING_SECRET", "cb-sign")
+    captured: dict = {}
+
+    def _post(url, **kw):
+        captured.update(kw)
+        return _FakeResponse()
+
+    monkeypatch.setattr(api.httpx, "post", _post)
+    client.post("/assessments", json=_job(callback_url="https://platform/cb"))
+
+    # The callback body carries a valid signature the platform can verify.
+    sig = captured["headers"].get(signing.SIGNATURE_HEADER)
+    assert sig is not None
+    assert signing.verify("cb-sign", captured["content"], sig)
 
 
 def test_accepts_job_and_completes(client):

@@ -36,6 +36,7 @@ that executes arbitrary code.
 from __future__ import annotations
 
 import ipaddress
+import json
 import logging
 import os
 import secrets
@@ -59,6 +60,7 @@ from .languages import LANGUAGES
 from .loader import question_from_dict
 from .ratelimit import client_ip, limiter
 from .runner import run_once, run_submission
+from .signing import SIGNATURE_HEADER, sign, verify
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +127,22 @@ def _require_token(x_assess_token: str | None = Header(default=None)) -> None:
     # response. `compare_digest` needs two strings, so coalesce a missing header.
     if not secrets.compare_digest(x_assess_token or "", expected):
         raise HTTPException(status_code=401, detail=f"invalid or missing {_AUTH_HEADER}.")
+
+
+async def _require_signature(request: Request) -> None:
+    """Verify the platform's HMAC body signature when signing is configured.
+
+    Enforced only when `ASSESS_SIGNING_SECRET` is set — like the bearer token,
+    unset means "not configured" so dev/tests run without it. The bearer token
+    proves the caller knows a secret that travels in the clear; this proves they
+    know one that never does, and that the body wasn't altered in flight. Async so
+    it can read the raw body — Starlette caches it, so the route still parses it.
+    """
+    secret = os.environ.get("ASSESS_SIGNING_SECRET")
+    if not secret:
+        return
+    if not verify(secret, await request.body(), request.headers.get(SIGNATURE_HEADER)):
+        raise HTTPException(status_code=401, detail="invalid or missing request signature.")
 
 
 # Per-client-IP rate limits for the endpoints that execute untrusted code or spend
@@ -239,7 +257,11 @@ def health() -> dict:
 
 @app.post(
     "/questions/draft",
-    dependencies=[Depends(_require_token), Depends(_rate_limit("draft"))],
+    dependencies=[
+        Depends(_require_token),
+        Depends(_require_signature),
+        Depends(_rate_limit("draft")),
+    ],
 )
 def draft(req: DraftRequest) -> dict:
     """Draft a validated Question from a brief. Stateless: stores nothing — the
@@ -278,7 +300,14 @@ def _require_language(language: str) -> None:
         )
 
 
-@app.post("/run", dependencies=[Depends(_require_token), Depends(_rate_limit("run"))])
+@app.post(
+    "/run",
+    dependencies=[
+        Depends(_require_token),
+        Depends(_require_signature),
+        Depends(_rate_limit("run")),
+    ],
+)
 def run_code(req: RunRequest) -> dict:
     """Execute code once against caller-supplied stdin and return what it printed.
 
@@ -298,7 +327,14 @@ def run_code(req: RunRequest) -> dict:
     }
 
 
-@app.post("/run/tests", dependencies=[Depends(_require_token), Depends(_rate_limit("run"))])
+@app.post(
+    "/run/tests",
+    dependencies=[
+        Depends(_require_token),
+        Depends(_require_signature),
+        Depends(_rate_limit("run")),
+    ],
+)
 def run_tests(req: RunTestsRequest) -> dict:
     """Run a submission against the question's tests and report pass/fail only.
 
@@ -337,7 +373,11 @@ def run_tests(req: RunTestsRequest) -> dict:
 @app.post(
     "/assessments",
     status_code=202,
-    dependencies=[Depends(_require_token), Depends(_rate_limit("assessments"))],
+    dependencies=[
+        Depends(_require_token),
+        Depends(_require_signature),
+        Depends(_rate_limit("assessments")),
+    ],
 )
 def create_assessment(req: AssessmentRequest, background: BackgroundTasks) -> dict:
     """Accept an assessment job; run it in the background, deliver via callback/email."""
@@ -435,14 +475,21 @@ _CALLBACK_BACKOFF_S = float(os.environ.get("ASSESS_CALLBACK_BACKOFF_S", "1.0"))
 
 def _post_callback(job_id: str, url: str, payload: dict) -> None:
     """POST the result to the platform's callback URL, retrying transient failures."""
-    headers = {}
+    headers = {"Content-Type": "application/json"}
     token = os.environ.get("CALLBACK_TOKEN")
     if token:
         headers[_AUTH_HEADER] = token
+    # Serialize once so we sign the exact bytes we send. Signs the callback body
+    # with CALLBACK_SIGNING_SECRET when set, so the platform can verify it's us and
+    # the result wasn't altered (mirrors the inbound _require_signature check).
+    body = json.dumps(payload).encode()
+    signing_secret = os.environ.get("CALLBACK_SIGNING_SECRET")
+    if signing_secret:
+        headers[SIGNATURE_HEADER] = sign(signing_secret, body)
 
     for attempt in range(1, max(1, _CALLBACK_ATTEMPTS) + 1):
         try:
-            response = httpx.post(url, json=payload, headers=headers, timeout=10.0)
+            response = httpx.post(url, content=body, headers=headers, timeout=10.0)
         except httpx.HTTPError as exc:
             reason: str = f"{type(exc).__name__}: {exc}"
         else:
