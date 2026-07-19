@@ -60,12 +60,6 @@ urgent, and running them in CI costs real money per run — but if they break,
 nothing will say so. Consider a scheduled/manual-dispatch job with the key in
 secrets.
 
-### Should CI also run on branch pushes?
-Triggers are `push: [main]` + `pull_request` — the standard cost-conscious
-choice (one run per PR branch, not two). It worked, but it means no CI feedback
-until a PR exists, which is why the Java failure surfaced later than it had to.
-Adding `push:` on all branches trades duplicate runs for earlier signal.
-
 ## Other pending work
 
 - **Candidate-feedback agent (cross-repo, not yet chosen).** Once the platform can
