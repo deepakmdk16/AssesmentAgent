@@ -69,6 +69,9 @@ belongs in the module docstring.
 
 **Delivery & reporting:**
 - `cli.py` — the `assess` CLI. `api.py` — the stateless HTTP intake worker.
+- `ratelimit.py` — in-process fixed-window rate limiter for the API's
+  code-execution / LLM-cost endpoints (`/run`, `/run/tests`, `/assessments`,
+  `/questions/draft`).
 - `report.py` — PDF rendering. `mailer.py` — Gmail SMTP delivery.
 - `pricing.py` — token/cost estimation.
 

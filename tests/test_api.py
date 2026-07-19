@@ -51,6 +51,35 @@ def test_health(client):
     assert client.get("/health").json() == {"status": "ok"}
 
 
+def test_run_endpoint_is_rate_limited(client, monkeypatch):
+    # Auth gates who; this caps how hard one caller can hammer code execution.
+    monkeypatch.setitem(api._RATE_LIMITS, "run", 2)
+    payload = {"code": "print(1)", "language": "python", "stdin": ""}
+    assert client.post("/run", json=payload).status_code == 200
+    assert client.post("/run", json=payload).status_code == 200
+    over = client.post("/run", json=payload)
+    assert over.status_code == 429
+    assert "too many requests" in over.json()["detail"].lower()
+
+
+def test_run_and_run_tests_share_the_run_bucket(client, monkeypatch):
+    # Both are the same untrusted-execution surface, so they count together.
+    monkeypatch.setitem(api._RATE_LIMITS, "run", 1)
+    assert client.post("/run", json={"code": "print(1)", "language": "python"}).status_code == 200
+    over = client.post(
+        "/run/tests",
+        json={"code": "print(1)", "language": "python", "question": QUESTION},
+    )
+    assert over.status_code == 429
+
+
+def test_rate_limit_zero_disables_the_bucket(client, monkeypatch):
+    monkeypatch.setitem(api._RATE_LIMITS, "run", 0)
+    payload = {"code": "print(1)", "language": "python", "stdin": ""}
+    for _ in range(3):
+        assert client.post("/run", json=payload).status_code == 200
+
+
 def test_auth_rejects_missing_or_wrong_token_when_configured(client, monkeypatch):
     monkeypatch.setenv("ASSESS_API_TOKEN", "s3cret")
     assert client.post("/assessments", json=_job()).status_code == 401

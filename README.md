@@ -221,6 +221,14 @@ with `ASSESS_API_TOKEN` unset every route returns 503 unless you explicitly set
 `ASSESS_AUTH_DISABLED=1` (dev/tests). Forgetting to configure a token must not
 leave an endpoint that runs arbitrary code open to the internet.
 
+Auth gates *who* can reach the code-execution / LLM-cost endpoints; a per-client
+rate limit caps *how hard* one caller can hammer them ([ratelimit.py](assessment_agent/ratelimit.py)).
+`/run` + `/run/tests` share one bucket, `/assessments` and `/questions/draft`
+their own; defaults are `ASSESS_RUN_RATE_LIMIT_MAX=60`, `…ASSESSMENTS…=30`,
+`…DRAFT…=10` per `ASSESS_RATE_LIMIT_WINDOW_S=60` (0 disables a bucket). Behind a
+proxy set `ASSESS_TRUST_PROXY_HEADERS=true` so the limiter keys on the forwarded
+client, not the proxy.
+
 `CALLBACK_TOKEN` is sent on the outbound callback so the platform can verify us.
 The callback is the only *durable* delivery path (the job map is in-memory,
 bounded, and dies with the process), so it retries with backoff and logs loudly

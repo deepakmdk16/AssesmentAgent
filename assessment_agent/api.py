@@ -43,12 +43,13 @@ import tempfile
 import time
 import uuid
 from collections import OrderedDict
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from .agent import assess, result_to_dict
@@ -56,6 +57,7 @@ from .authoring import draft_question, draft_to_dict
 from .constants import OFFLINE_ENGINE
 from .languages import LANGUAGES
 from .loader import question_from_dict
+from .ratelimit import client_ip, limiter
 from .runner import run_once, run_submission
 
 logger = logging.getLogger(__name__)
@@ -123,6 +125,27 @@ def _require_token(x_assess_token: str | None = Header(default=None)) -> None:
     # response. `compare_digest` needs two strings, so coalesce a missing header.
     if not secrets.compare_digest(x_assess_token or "", expected):
         raise HTTPException(status_code=401, detail=f"invalid or missing {_AUTH_HEADER}.")
+
+
+# Per-client-IP rate limits for the endpoints that execute untrusted code or spend
+# API money — auth gates *who* can reach them, this caps how hard one caller can
+# hammer them. 0 disables a bucket. Kept in a dict (read at request time) so a test
+# can lower a limit without re-importing the module.
+_RATE_LIMIT_WINDOW_S = int(os.environ.get("ASSESS_RATE_LIMIT_WINDOW_S", "60"))
+_RATE_LIMITS: dict[str, int] = {
+    "assessments": int(os.environ.get("ASSESS_ASSESSMENTS_RATE_LIMIT_MAX", "30")),
+    "run": int(os.environ.get("ASSESS_RUN_RATE_LIMIT_MAX", "60")),
+    "draft": int(os.environ.get("ASSESS_DRAFT_RATE_LIMIT_MAX", "10")),
+}
+
+
+def _rate_limit(bucket: str) -> Callable[[Request], None]:
+    """A route dependency that 429s once this client exceeds `bucket`'s window."""
+
+    def dep(request: Request) -> None:
+        limiter.check(bucket, client_ip(request), _RATE_LIMITS[bucket], _RATE_LIMIT_WINDOW_S)
+
+    return dep
 
 
 # job_id -> {"status": "accepted"|"done"|"error", "result": dict|None, "error": str|None}
@@ -214,7 +237,10 @@ def health() -> dict:
     return {"status": "ok"}
 
 
-@app.post("/questions/draft", dependencies=[Depends(_require_token)])
+@app.post(
+    "/questions/draft",
+    dependencies=[Depends(_require_token), Depends(_rate_limit("draft"))],
+)
 def draft(req: DraftRequest) -> dict:
     """Draft a validated Question from a brief. Stateless: stores nothing — the
     platform persists the result on human approval. Claude drafts the prose,
@@ -252,7 +278,7 @@ def _require_language(language: str) -> None:
         )
 
 
-@app.post("/run", dependencies=[Depends(_require_token)])
+@app.post("/run", dependencies=[Depends(_require_token), Depends(_rate_limit("run"))])
 def run_code(req: RunRequest) -> dict:
     """Execute code once against caller-supplied stdin and return what it printed.
 
@@ -272,7 +298,7 @@ def run_code(req: RunRequest) -> dict:
     }
 
 
-@app.post("/run/tests", dependencies=[Depends(_require_token)])
+@app.post("/run/tests", dependencies=[Depends(_require_token), Depends(_rate_limit("run"))])
 def run_tests(req: RunTestsRequest) -> dict:
     """Run a submission against the question's tests and report pass/fail only.
 
@@ -308,7 +334,11 @@ def run_tests(req: RunTestsRequest) -> dict:
     }
 
 
-@app.post("/assessments", status_code=202, dependencies=[Depends(_require_token)])
+@app.post(
+    "/assessments",
+    status_code=202,
+    dependencies=[Depends(_require_token), Depends(_rate_limit("assessments"))],
+)
 def create_assessment(req: AssessmentRequest, background: BackgroundTasks) -> dict:
     """Accept an assessment job; run it in the background, deliver via callback/email."""
     if req.language not in LANGUAGES:

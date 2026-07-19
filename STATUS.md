@@ -24,12 +24,6 @@ grant, not the machine-wide `Read(//Users/madiredeepakkumar/**)`. Remaining:
   natural recovery is the whole-file Read §7 exists to prevent. Worked around
   repo-side (see this repo's CLAUDE.md); the global rule should say so too.
 
-### Rate limiting on the API (not started — decide the approach first)
-`/assessments` and `/run` execute submitted code, and `adversarial: true` spends
-API money per call. Fail-closed auth now gates *who* can reach them, but there is
-no per-caller quota. Needs a dependency (e.g. slowapi) or a reverse proxy —
-that choice is the blocker, not the code.
-
 ### Sandboxing the runner (the biggest production gap)
 Today: a per-run timeout, an output cap (`RLIMIT_FSIZE`), a process-group kill so
 a timeout takes the whole tree, and an address-space cap (`RLIMIT_AS`) that
