@@ -9,9 +9,18 @@
 name: checkpoints
 
 on:
+  # Run on every branch push (not just main) so the gate gives feedback before a
+  # PR exists — a Java-only failure once surfaced late because a branch had no CI
+  # until it was PR'd. `pull_request` stays for the merge-preview run.
   push:
-    branches: [main]
   pull_request:
+
+# A pushed branch that is also open as a PR triggers two runs of the same commit;
+# newer pushes should supersede in-flight runs rather than stack. Keyed by ref so
+# main and each branch cancel only their own runs, never each other's.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   checkpoints:
