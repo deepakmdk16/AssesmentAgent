@@ -9,42 +9,43 @@ CONVENTIONS.md.
 
 ## Open items
 
-### Next up: global (cross-repo) Claude-setup fixes
-Found in the 2026-07-17 audit; these live in `~/.claude/` and are **shared with
-`assessment-platform`**. The guard-hook/config gaps below are now fixed (guard.py
-`rm -fr`/`rm -r -f`/`rm -Rf` all ask and root-target deletes deny — order- and
-separation-independent, proven by `~/.claude/hooks/guard_probe.py`; Read of a
-secret path now asks via the wired-in Read matcher; the stray
-`~/.claude/.claude.json` is deleted). The home-wide Read grant was **checked and
-is not present** in `assessment-platform` — it carries only a `~/.claude/**`-scoped
-grant, not the machine-wide `Read(//Users/madiredeepakkumar/**)`. Remaining:
+### Runner sandboxing — landed; prod bring-up remains
+The OS sandbox that closes the fork-bomb / network-egress / JVM-Go-memory gap now
+exists: `sandbox.py` wraps each untrusted child's argv in **nsjail** (fresh network
+namespace = no egress, all capabilities dropped, cgroup-v2 **memory + pids**
+ceilings), selected by `ASSESS_SANDBOX`. The `Dockerfile` bundles nsjail + every
+toolchain and sets `ASSESS_SANDBOX=nsjail`, so production runs sandboxed by
+default; macOS/dev/CI fall through to a no-op passthrough (today's rlimits + killpg
+only). Forcing `ASSESS_SANDBOX=nsjail` where nsjail is missing fails the run loudly
+rather than executing untrusted code open.
 
-- Global `CLAUDE.md` §7 mandates serena-before-Read, but serena needs an explicit
-  `activate_project` first, so the mandated call fails once per session and the
-  natural recovery is the whole-file Read §7 exists to prevent. Worked around
-  repo-side (see this repo's CLAUDE.md); the global rule should say so too.
+**Validated end-to-end on real nsjail** (Docker, `--privileged --cgroupns=host`,
+2026-07-19): a correct submission runs, network egress is blocked, C compiles+runs,
+and a 1 GB allocation is killed by a 256 MB cgroup — `test_sandbox_nsjail.py` passes
+(it SKIPs where nsjail is absent, like the eval harnesses). Bring-up shook out four
+real nsjail-flag facts now baked into `sandbox.py`: the rw bind flag is `--bindmount`
+(not `--bindmount_rw`); nsjail owns the rlimits so the runner skips its preexec caps
+under the sandbox (else RLIMIT_AS raise → EPERM); `--rlimit_as inf` + cgroup is what
+bounds JVM/Go memory; and nsjail `execve()`s argv[0] literally so a bare `python3`
+must be resolved to an absolute path and a minimal PATH/HOME injected (host env is
+cleared, which usefully keeps secrets out of candidate code).
 
-### Sandboxing the runner (the biggest production gap)
-Today: a per-run timeout, an output cap (`RLIMIT_FSIZE`), a process-group kill so
-a timeout takes the whole tree, and an address-space cap (`RLIMIT_AS`) that
-applies to *some* languages. Nothing bounds fork bombs, network egress, or memory
-on the JVM/Go paths. Real isolation is a container with no network, dropped
-capabilities, and cgroups for **memory + pids**.
+Still to do:
+- **Optional hardening not yet added**: a seccomp-bpf syscall filter, and per-run
+  cgroup CPU limits (today CPU is bounded only by the wall-clock timeout).
+- **The uid remap stays off**: the jail runs as root-in-container (nsjail warns).
+  The container is the outer boundary; revisit if the worker ever runs less isolated.
 
-Two rlimits have now been tried and found to be the wrong instrument — worth
-recording so a third attempt doesn't repeat it. **The lesson is that an rlimit
-expresses a proxy, not the intent**; only a cgroup can say "this submission gets
-N megabytes / M processes":
+Recorded so a third rlimit attempt doesn't repeat it — **an rlimit expresses a
+proxy, not the intent; only a cgroup can say "this submission gets N megabytes / M
+processes"** (now delivered by nsjail's cgroup controllers above):
 - `RLIMIT_NPROC` — counts per *UID*, not per process tree, so it cannot bound one
-  submission. Set low it breaks legitimate code (the login session's own process
-  count, ~686 locally, already exceeds any sane cap); set high it does nothing.
-  Rejected; orphans are handled by the process-group kill instead.
+  submission. Rejected; orphans are handled by the process-group kill instead.
 - `RLIMIT_AS` — caps *address space*, not memory in use. The JVM and Go reserve
-  GBs of untouched virtual space at startup, so the cap doesn't bound them, it
-  stops them booting. Now skipped for those two via
-  `Language.address_space_capped` (found by CI's first run, 2026-07-17). What it
-  still buys: a runaway CPython allocation on Linux, and little else — it is
-  silently ignored on macOS.
+  GBs of untouched virtual space at startup, so it stops them booting rather than
+  bounding them; skipped for those two via `Language.address_space_capped`. It
+  survives as best-effort on the passthrough path (a runaway CPython allocation on
+  Linux); the nsjail cgroup is what actually bounds memory for every language now.
 
 ## Other pending work
 

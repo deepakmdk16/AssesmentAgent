@@ -28,11 +28,14 @@ for the JVM and Go (which reserve GBs of untouched virtual space at startup) and
 silently ignored by macOS. So it bounds a runaway allocation in CPython on Linux
 and little else.
 
-These are defense-in-depth, NOT a sandbox. Nothing here bounds fork bombs,
-network egress, or memory on the runtimes that opt out. For production, run this
-inside a locked-down sandbox (container with no network, dropped capabilities,
-and cgroups for memory + pids) — that is the layer that can actually express
-"this submission gets N megabytes", which no rlimit here can.
+On their own these are defense-in-depth, NOT a sandbox: nothing *here* bounds fork
+bombs, network egress, or memory on the runtimes that opt out. That layer lives in
+`sandbox.py`, which wraps each child's argv in nsjail when `ASSESS_SANDBOX` selects
+it (a fresh network namespace, dropped capabilities, and cgroup-v2 memory + pids
+ceilings — the things that can actually express "this submission gets N megabytes /
+M processes", which no rlimit here can). Where no sandbox is configured (macOS/dev,
+the test suite) the wrap is a passthrough and only these rlimits + the killpg
+apply, exactly as before. See `sandbox.py` and the Dockerfile.
 """
 
 from __future__ import annotations
@@ -54,6 +57,8 @@ except ImportError:  # pragma: no cover - non-POSIX (e.g. Windows)
 from .constants import CORRECTNESS, Category
 from .languages import LANGUAGES
 from .questions import TestCase
+from .sandbox import is_active as sandbox_active
+from .sandbox import wrap as sandbox_wrap
 
 
 @dataclass
@@ -151,6 +156,10 @@ def _normalize(text: str) -> str:
 # the sandbox's pids controller (cgroups), per the module docstring.
 _MEM_LIMIT_BYTES = int(os.environ.get("ASSESS_MEM_LIMIT_MB", "512")) * 1024 * 1024
 _OUTPUT_LIMIT_BYTES = int(os.environ.get("ASSESS_OUTPUT_LIMIT_MB", "64")) * 1024 * 1024
+# The fork-bomb brake. Enforced only when an OS sandbox is active (nsjail's cgroup
+# pids controller — see sandbox.py); the passthrough path has no way to bound a
+# process tree, which is exactly the gap the sandbox closes. 0 disables.
+_PIDS_MAX = int(os.environ.get("ASSESS_PIDS_MAX", "64"))
 
 
 def _apply_limits(cap_address_space: bool) -> None:
@@ -235,16 +244,32 @@ def _run_case(
     Uses Popen rather than `subprocess.run` because `run`'s timeout path kills
     only the direct child; we need the whole process group (see `_kill_tree`).
     """
+    # Wrap the untrusted run in the OS sandbox (no-op passthrough where none is
+    # configured, e.g. macOS/dev/CI). The cgroup memory ceiling here bounds every
+    # language including the JVM/Go — the thing RLIMIT_AS could not do — so mem is
+    # passed unconditionally, independent of `cap_address_space`. The output cap is
+    # handed over too (nsjail's --rlimit_fsize) since it owns the child's limits.
+    exec_cmd = sandbox_wrap(
+        run_cmd,
+        workdir,
+        mem_bytes=_MEM_LIMIT_BYTES,
+        pids_max=_PIDS_MAX,
+        fsize_bytes=_OUTPUT_LIMIT_BYTES,
+    )
+    # Under the sandbox nsjail sets every rlimit itself; adding the runner's preexec
+    # caps on top fights it (raising RLIMIT_AS back up hits EPERM). Passthrough keeps
+    # the preexec rlimits exactly as before. The process-group kill applies either way.
+    preexec = None if sandbox_active() else _preexec_for(cap_address_space)
     start = time.perf_counter()
     with tempfile.TemporaryFile() as out_f, tempfile.TemporaryFile() as err_f:
         try:
             proc = subprocess.Popen(
-                run_cmd,
+                exec_cmd,
                 cwd=workdir,
                 stdin=subprocess.PIPE,
                 stdout=out_f,
                 stderr=err_f,
-                preexec_fn=_preexec_for(cap_address_space),
+                preexec_fn=preexec,
                 start_new_session=_NEW_SESSION,
             )
         except FileNotFoundError as exc:
@@ -317,9 +342,14 @@ def run_submission(
         (workdir / source_filename).write_text(source)
 
         if compile_cmd is not None:
+            # Sandbox the compiler too: no network (a source must not fetch deps at
+            # build time) and the pids brake. Memory is left uncapped — compilers
+            # legitimately use a lot and `compile_timeout` already bounds them, so a
+            # cgroup mem cap here would only OOM honest builds.
+            compile_exec = sandbox_wrap(compile_cmd, workdir, pids_max=_PIDS_MAX)
             try:
                 proc = subprocess.run(
-                    compile_cmd,
+                    compile_exec,
                     cwd=workdir,
                     capture_output=True,
                     text=True,

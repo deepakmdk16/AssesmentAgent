@@ -279,10 +279,14 @@ after that stopped being true). In short: a per-run timeout, best-effort memory
 and output rlimits, and a process-group kill so a timeout takes the whole tree
 rather than leaving orphans.
 
-**These are defense-in-depth, not a sandbox.** Nothing here bounds fork bombs or
-network egress, and `RLIMIT_AS` is not honored on macOS. For production, run the
-runner inside a locked-down sandbox: container, no network, dropped
-capabilities, cgroups including the pids controller.
+On their own those are defense-in-depth, not a sandbox — they can't bound fork
+bombs, network egress, or memory on the JVM/Go paths. That layer is
+[sandbox.py](assessment_agent/sandbox.py): it wraps each untrusted child in
+**nsjail** (no network, dropped capabilities, cgroup-v2 memory + pids ceilings)
+when `ASSESS_SANDBOX` selects it. The [Dockerfile](Dockerfile) bundles nsjail and
+turns it on by default (`ASSESS_SANDBOX=nsjail`); macOS/dev/CI fall through to a
+no-op passthrough (rlimits + killpg only). See runner.py / sandbox.py for the exact
+guarantees and the prod bring-up notes.
 
 Two further boundaries worth knowing:
 
