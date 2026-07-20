@@ -78,8 +78,9 @@ belongs in the module docstring.
   code-execution / LLM-cost endpoints (`/run`, `/run/tests`, `/assessments`,
   `/questions/draft`).
 - `signing.py` — HMAC-SHA256 body signing/verification for the platform↔agent
-  link (mirrored verbatim in the platform repo; inbound requests + the outbound
-  callback are signed when the signing secrets are configured).
+  link (mirrored verbatim in the platform repo — kept identical by
+  `scripts/checkpoints.sh`, which fails the push on divergence; inbound requests +
+  the outbound callback are signed when the signing secrets are configured).
 - `report.py` — PDF rendering. `mailer.py` — Gmail SMTP delivery.
 - `pricing.py` — token/cost estimation.
 

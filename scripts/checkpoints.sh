@@ -26,6 +26,26 @@ if [ -n "$_hits" ]; then
   echo "$_hits"; echo "❌ possible hard-coded secret in tracked files (above)"; exit 1
 fi
 
+echo "==> signing.py parity (cross-repo)"
+# signing.py is mirrored byte-for-byte in the companion repo; if the two diverge,
+# every signed request 401s. This is the "keep them identical" comment turned into
+# a gate. Only runs when the companion repo is checked out beside this one — the
+# local pre-push case, where the edit is actually made — and skips with a notice
+# otherwise (e.g. CI checks out a single repo). See CLAUDE.md → signing.py.
+_own_signing="assessment_agent/signing.py"
+_companion_signing="../assessment-platform/assessment_platform/signing.py"
+if [ -f "$_companion_signing" ]; then
+  if cmp -s "$_own_signing" "$_companion_signing"; then
+    echo "  ✓ identical to companion repo"
+  else
+    echo "  ❌ $_own_signing differs from the companion repo's signing.py:"
+    diff "$_own_signing" "$_companion_signing" | sed 's/^/     /' || true
+    echo "  keep them byte-identical or signed requests 401 — update BOTH."; exit 1
+  fi
+else
+  echo "  ℹ️  companion repo not checked out beside this one — parity check skipped"
+fi
+
 echo "==> docs drift"
 # CLAUDE.md loads every session and README.md is the front door, so a stale one
 # misleads every future reader — human or agent. Checkpoint #5 already made

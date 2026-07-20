@@ -10,8 +10,9 @@ can't be replayed indefinitely.
 Header format (Stripe-style): `X-Assess-Signature: t=<unix>,v1=<hex-hmac-sha256>`
 Signed message:                `f"{t}.".encode() + body`
 
-This module is mirrored **verbatim** in the platform repo — the two sides must
-agree byte for byte, so keep them identical.
+This module is mirrored **verbatim** in the companion repo (agent <-> platform);
+the two sides must agree byte for byte. `scripts/checkpoints.sh` fails the push
+if they diverge.
 """
 
 from __future__ import annotations
