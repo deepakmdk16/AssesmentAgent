@@ -44,7 +44,15 @@ class AssessmentResult:
 
 
 def _format_execution_summary(execution: ExecutionReport) -> str:
-    """Human-readable execution summary handed to the judge (includes timing)."""
+    """Compact per-test summary handed to the judge — status + timing only.
+
+    Deliberately omits each case's stdin/expected/actual. The judge assesses the
+    *code*; raw test I/O can be multi-megabyte (a stress case), which would blow
+    the model's context window (a 1.4 MB expected/actual pair once pushed a
+    prompt past the 1M-token limit). A failure or TLE is named so the judge can
+    still call it out; the payloads stay in the deterministic result, not the
+    prompt.
+    """
     if execution.compile_error:
         return f"COMPILE ERROR: {execution.compile_error}"
     _, _, pct = execution.score()
@@ -53,8 +61,8 @@ def _format_execution_summary(execution: ExecutionReport) -> str:
         status = "PASS" if o.passed else ("TLE" if o.timed_out else "FAIL")
         detail = f" ({o.error})" if o.error else ""
         lines.append(
-            f"  [{status}] {o.name} ({o.category}, weight {o.weight:g}, {o.duration_s:.3f}s): "
-            f"expected {o.expected!r}, got {o.actual!r}{detail}"
+            f"  [{status}] {o.name} ({o.category}, weight {o.weight:g}, "
+            f"{o.duration_s:.3f}s){detail}"
         )
     return "\n".join(lines)
 
