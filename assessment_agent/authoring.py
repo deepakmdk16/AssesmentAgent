@@ -33,11 +33,11 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from .constants import CORRECTNESS, OFFLINE_ENGINE, PERFORMANCE
-from .llm import client_timeout_s
+from .llm import client_timeout_s, ollama_chat, ollama_model, provider
 from .loader import question_from_dict
 from .pricing import Usage
 from .questions import TestCase
-from .runner import run_submission
+from .runner import _normalize, run_submission
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +51,15 @@ _PERFORMANCE_WEIGHT = 6.0
 # The generator only synthesises an input (it isn't the graded solution), so it
 # gets generous headroom rather than the candidate-facing per-case time limit.
 _GEN_TIME_LIMIT_S = 15.0
+
+# Just off greedy for the local provider — see `_draft_spec_ollama`. Matches the
+# adversarial probe's setting; the Claude path is unaffected.
+_OLLAMA_TEMPERATURE = 0.3
+
+# The brute force is deliberately naive (exponential is fine) and only ever runs
+# on the small correctness inputs, so it also gets headroom rather than the
+# candidate-facing limit — timing it out would silently forfeit the cross-check.
+_BRUTE_FORCE_TIME_LIMIT_S = 15.0
 
 
 class _DraftInput(BaseModel):
@@ -74,6 +83,12 @@ class DraftSpec(BaseModel):
     # reliably — a declared count drifts from the actual values). Mirrors how the
     # built-in questions synthesise their perf cases with a generator.
     performance_generator: str
+    # An independent, deliberately naive solution used to cross-check the
+    # reference on the small correctness inputs. The reference is the oracle, so
+    # nothing else can catch it being wrong-but-deterministic; a disagreement
+    # drops that case. Optional: an older or weaker model may not emit one, and a
+    # missing second opinion should degrade to a warning, not lose the question.
+    brute_force_solution: str | None = None
     time_limit_s: float = 2.0
     pass_threshold: float = 0.9
     required_complexity: str | None = None
@@ -102,6 +117,7 @@ _DRAFT_SCHEMA = {
             },
         },
         "performance_generator": {"type": "string"},
+        "brute_force_solution": {"type": ["string", "null"]},
         "time_limit_s": {"type": "number"},
         "pass_threshold": {"type": "number"},
         "required_complexity": {"type": ["string", "null"]},
@@ -192,13 +208,23 @@ def draft_question(
     (say) a reference that didn't compile. The last attempt's warnings are what
     the caller sees, prefixed with how many attempts were made.
     """
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    use_ollama = provider() == "ollama"
+    if not use_ollama and not os.environ.get("ANTHROPIC_API_KEY"):
         return _offline_result()
     config = DraftConfig.from_env()
+    engine = ollama_model() if use_ollama else config.engine_label
 
-    result = DraftResult(engine=config.engine_label, question=None)
+    result = DraftResult(engine=engine, question=None)
     for attempt in range(1, max(1, attempts) + 1):
-        result = _draft_once(config, brief, language, difficulty, target_complexity)
+        result = _draft_once(
+            config,
+            brief,
+            language,
+            difficulty,
+            target_complexity,
+            use_ollama=use_ollama,
+            engine=engine,
+        )
         if result.question is not None:
             return result
         logger.info(
@@ -218,16 +244,22 @@ def _draft_once(
     language: str,
     difficulty: str | None,
     target_complexity: str | None,
+    *,
+    use_ollama: bool,
+    engine: str,
 ) -> DraftResult:
     try:
-        spec, usage = _draft_spec(config, brief, language, difficulty, target_complexity)
+        if use_ollama:
+            spec, usage = _draft_spec_ollama(brief, language, difficulty, target_complexity)
+        else:
+            spec, usage = _draft_spec(config, brief, language, difficulty, target_complexity)
     except Exception as exc:
         return DraftResult(
-            engine=config.engine_label,
+            engine=engine,
             question=None,
             warnings=[f"Draft generation failed: {exc}"],
         )
-    return build_from_spec(spec, engine=config.engine_label, usage=usage)
+    return build_from_spec(spec, engine=engine, usage=usage)
 
 
 def build_from_spec(spec: DraftSpec, *, engine: str, usage: Usage | None = None) -> DraftResult:
@@ -280,6 +312,10 @@ def build_from_spec(spec: DraftSpec, *, engine: str, usage: Usage | None = None)
         else:
             kept.append(TestCase(ci.name, ci.stdin, o.actual, CORRECTNESS, _CORRECTNESS_WEIGHT))
 
+    # 1b. Second opinion on the oracle: re-derive the same outputs with the
+    #     independent brute force and drop anything the two disagree on.
+    kept = _cross_check_oracle(spec, kept, warnings)
+
     # 2. The single performance case: execute the generator to synthesise a large
     #    valid input, then run the reference on it for the expected output.
     perf = _build_performance_case(spec, warnings)
@@ -315,6 +351,69 @@ def build_from_spec(spec: DraftSpec, *, engine: str, usage: Usage | None = None)
 
     result.question = question_dict
     return result
+
+
+def _cross_check_oracle(
+    spec: DraftSpec, cases: list[TestCase], warnings: list[str]
+) -> list[TestCase]:
+    """Verify the reference's outputs against an independent brute force.
+
+    The reference solution is the oracle — every `expected` comes from executing
+    it — so a reference that is wrong *but deterministic* yields a question that
+    passes every other check and then marks correct submissions wrong. Running a
+    second, naive implementation over the same small inputs is the only thing in
+    the pipeline that can catch that.
+
+    A case the two disagree on is **dropped**: its expected output is in dispute,
+    and a disputed case must never grade a candidate. Everything else degrades to
+    a warning and keeps the cases — a missing or broken second opinion leaves the
+    reference unverified, which is no worse than not having asked for one.
+
+    Only correctness cases are checked; the brute force is by construction too
+    slow for the performance input.
+    """
+    if not spec.brute_force_solution:
+        warnings.append(
+            "No brute-force solution was drafted, so the reference solution "
+            "(which computes every expected output) is unverified."
+        )
+        return cases
+
+    probes = tuple(TestCase(t.name, t.stdin, "", CORRECTNESS) for t in cases)
+    report = run_submission(
+        spec.brute_force_solution,
+        spec.reference_language,
+        probes,
+        time_limit_s=_BRUTE_FORCE_TIME_LIMIT_S,
+    )
+    if report.infra_error or report.compile_error:
+        detail = report.infra_error or report.compile_error
+        warnings.append(
+            f"Brute-force solution could not run ({detail}); the reference solution is unverified."
+        )
+        return cases
+
+    by_name = {o.name: o for o in report.outcomes}
+    agreed: list[TestCase] = []
+    for case in cases:
+        o = by_name.get(case.name)
+        if o is None or o.timed_out or o.error is not None:
+            why = "timed out" if o is not None and o.timed_out else "errored"
+            warnings.append(
+                f"Case {case.name!r}: brute force {why}, so the reference's "
+                "output for it is unverified."
+            )
+            agreed.append(case)
+        elif _normalize(o.actual) != _normalize(case.expected):
+            warnings.append(
+                f"Dropped case {case.name!r}: the reference solution and the "
+                f"brute force disagree (reference {case.expected!r}, brute force "
+                f"{o.actual!r}). One of them is wrong, so the expected output "
+                "cannot be trusted to grade a candidate."
+            )
+        else:
+            agreed.append(case)
+    return agreed
 
 
 def _build_performance_case(spec: DraftSpec, warnings: list[str]) -> TestCase | None:
@@ -395,6 +494,75 @@ def _to_loader_dict(spec: DraftSpec, cases: list[TestCase], example: tuple[str, 
     return data
 
 
+def _draft_user_content(
+    brief: str,
+    language: str,
+    difficulty: str | None,
+    target_complexity: str | None,
+) -> str:
+    """The drafting user turn — shared by the Claude and Ollama paths so both
+    backends draft from identical inputs."""
+    hints = [f"LANGUAGE (for the reference solution): {language}"]
+    if difficulty:
+        hints.append(f"DIFFICULTY: {difficulty}")
+    if target_complexity:
+        hints.append(f"TARGET COMPLEXITY: {target_complexity}")
+    return (
+        f"INTERVIEWER BRIEF:\n{brief}\n\n" + "\n".join(hints) + "\n\n"
+        "Draft the complete question following the required format."
+    )
+
+
+def _parse_draft_spec(text: str, *, truncated: bool) -> DraftSpec:
+    """Parse the model's JSON into a DraftSpec, with a truncation hint. Shared by
+    both providers; the caller still validates the executed reference downstream."""
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        hint = " (response truncated — raise max_tokens)" if truncated else ""
+        raise RuntimeError(f"Draft generator returned invalid JSON{hint}: {exc}") from exc
+    return DraftSpec.model_validate(data)
+
+
+def _draft_spec_ollama(
+    brief: str,
+    language: str,
+    difficulty: str | None,
+    target_complexity: str | None,
+) -> tuple[DraftSpec, Usage]:
+    """Draft via a local Ollama model. Same prompt + schema as the Claude path;
+    cost is zero (local model absent from PRICING). The drafted question's own
+    executed reference is still the oracle — a weaker model just fails validation
+    more often and burns a retry, it can never ship an unverified question.
+
+    Runs slightly above greedy for the same reason the adversarial probe does. A
+    draft is a long, highly repetitive JSON document — two whole programs plus
+    eight similar test inputs — and temperature-0 decoding locks into repeating
+    it. Measured on `qwen3-coder:30b` for a shortest-path brief: at temperature 0
+    the reply broke mid-string and then repeated to the 8192-token ceiling (147 s,
+    unparseable, and *identical* on every retry, which is why retrying could never
+    recover it); at 0.3 the same brief parsed in ~25 s with 8 correctness inputs.
+    Retries only mean something when the sampling can actually differ.
+    """
+    model = ollama_model()
+    text, in_tokens, out_tokens = ollama_chat(
+        model=model,
+        system=_PROMPT,
+        user=_draft_user_content(brief, language, difficulty, target_complexity),
+        json_schema=_DRAFT_SCHEMA,
+        temperature=_OLLAMA_TEMPERATURE,
+    )
+    spec = _parse_draft_spec(text, truncated=False)
+    usage = Usage(
+        model=model,
+        input_tokens=in_tokens,
+        output_tokens=out_tokens,
+        cache_read_input_tokens=0,
+        cache_creation_input_tokens=0,
+    )
+    return spec, usage
+
+
 def _draft_spec(
     config: DraftConfig,
     brief: str,
@@ -408,15 +576,7 @@ def _draft_spec(
     # adversarial probe there is no untrusted-input fence here — only the timeout.
     client = anthropic.Anthropic(timeout=client_timeout_s())
 
-    hints = [f"LANGUAGE (for the reference solution): {language}"]
-    if difficulty:
-        hints.append(f"DIFFICULTY: {difficulty}")
-    if target_complexity:
-        hints.append(f"TARGET COMPLEXITY: {target_complexity}")
-    user_content = (
-        f"INTERVIEWER BRIEF:\n{brief}\n\n" + "\n".join(hints) + "\n\n"
-        "Draft the complete question following the required format."
-    )
+    user_content = _draft_user_content(brief, language, difficulty, target_complexity)
 
     output_config: dict = {"format": {"type": "json_schema", "schema": _DRAFT_SCHEMA}}
     if config.effort:
@@ -445,17 +605,7 @@ def _draft_spec(
     if text is None:
         raise RuntimeError(f"Draft generator returned no text (stop_reason={response.stop_reason})")
 
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as exc:
-        hint = (
-            " (response truncated — raise max_tokens)"
-            if response.stop_reason == "max_tokens"
-            else ""
-        )
-        raise RuntimeError(f"Draft generator returned invalid JSON{hint}: {exc}") from exc
-
-    spec = DraftSpec.model_validate(data)
+    spec = _parse_draft_spec(text, truncated=response.stop_reason == "max_tokens")
     u = response.usage
     usage = Usage(
         model=config.model,

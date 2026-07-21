@@ -95,6 +95,25 @@ def test_offline_probe_produces_no_findings():
     assert "ANTHROPIC_API_KEY" in report.summary
 
 
+def test_ollama_provider_routes_and_degrades(monkeypatch):
+    """ASSESS_LLM_PROVIDER=ollama probes via the local model with no API key; a
+    failure there degrades to an empty advisory report tagged with the local
+    model, never gating the verdict or falling to the offline path."""
+    monkeypatch.setenv("ASSESS_LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("ASSESS_OLLAMA_MODEL", "qwen3-coder:30b")
+
+    def _boom(**kwargs):
+        raise ConnectionError("ollama down")
+
+    monkeypatch.setattr("assessment_agent.adversarial.ollama_chat", _boom)
+    report = probe_adversarial(question=HARDCODED_QUESTION, language="python", source=STRONG)
+    assert report.engine == "qwen3-coder:30b"
+    assert report.probed == 0
+    assert report.findings == []
+    assert "ollama down" in report.summary
+    assert "ANTHROPIC_API_KEY" not in report.summary
+
+
 # --- Graceful failure: a generation error must never abort the assessment ----
 
 

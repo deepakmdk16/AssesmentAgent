@@ -34,6 +34,11 @@ See [README.md](README.md) for the full flow, and
   to `callback_url` and/or emailed. Poll `GET /assessments/{job_id}` as a
   fallback; `GET /health`. No question storage lives here — the platform owns it
   and sends it inline.
+- Judge/author with a **local model** (no Anthropic cost, candidate code never
+  leaves the machine): run Ollama, then
+  `ASSESS_LLM_PROVIDER=ollama uv run assess ...` (default `qwen3-coder:30b`,
+  override with `ASSESS_OLLAMA_MODEL`; server via `OLLAMA_HOST`). Re-baseline the
+  evals (checkpoint #4) before trusting a local model — quality varies by model.
 - Run the eval harness: `uv run assess-eval`
 - Run tests: `uv run pytest`
 - Lint / format / types: `uv run ruff check .`, `uv run ruff format .`, `uv run mypy`.
@@ -70,7 +75,10 @@ belongs in the module docstring.
   reference, never the model's arithmetic.
 - `rubric.py` + `prompts/` — the judge's instructions as editable markdown
   modules ("skills as repo modules", not the Anthropic Skills feature).
-- `llm.py` — shared call-site concerns: timeouts + untrusted-input fencing.
+- `llm.py` — shared call-site concerns: timeouts, untrusted-input fencing, and
+  **provider selection** (`ASSESS_LLM_PROVIDER`: `anthropic` default, or `ollama`
+  for a local model via `ollama_chat`). Swapping providers can only change the
+  reported prose, never a verdict — quality never gates (CONVENTIONS.md §1).
 
 **Delivery & reporting:**
 - `cli.py` — the `assess` CLI. `api.py` — the stateless HTTP intake worker.

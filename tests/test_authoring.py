@@ -23,6 +23,26 @@ REF_PY = "import sys\nd = sys.stdin.read().split()\nn = int(d[0])\nprint(sum(int
 # Generator: print one large valid input (N then N values).
 GEN_PY = "n = 1000\nprint(n)\nprint(' '.join(str(i) for i in range(1, n + 1)))\n"
 PERF_SUM = sum(range(1, 1001))
+# Independent brute force: same contract, accumulated the obvious slow way.
+BRUTE_PY = (
+    "import sys\n"
+    "d = sys.stdin.read().split()\n"
+    "n = int(d[0])\n"
+    "t = 0\n"
+    "for x in d[1 : 1 + n]:\n"
+    "    t += int(x)\n"
+    "print(t)\n"
+)
+# A reference that is WRONG but deterministic: it doubles the answer when N == 3.
+# It agrees with itself on every run, so nothing but a second implementation can
+# catch it.
+WRONG_REF_PY = (
+    "import sys\n"
+    "d = sys.stdin.read().split()\n"
+    "n = int(d[0])\n"
+    "s = sum(int(x) for x in d[1 : 1 + n])\n"
+    "print(s * 2 if n == 3 else s)\n"
+)
 
 
 def _spec(**overrides) -> DraftSpec:
@@ -55,6 +75,24 @@ def test_offline_result_without_key():
     assert result.engine == OFFLINE_ENGINE
     assert result.question is None
     assert result.warnings
+
+
+def test_ollama_provider_routes_and_degrades(monkeypatch):
+    """ASSESS_LLM_PROVIDER=ollama drafts via the local model with no API key; a
+    failure there degrades to an empty result tagged with the local model, and
+    must not fall back to the offline no-key path."""
+    monkeypatch.setenv("ASSESS_LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("ASSESS_OLLAMA_MODEL", "qwen3-coder:30b")
+
+    def _boom(**kwargs):
+        raise ConnectionError("ollama down")
+
+    monkeypatch.setattr(authoring, "ollama_chat", _boom)
+    result = draft_question("some brief", language="python", attempts=1)
+    assert result.engine == "qwen3-coder:30b"
+    assert result.question is None
+    assert any("ollama down" in w for w in result.warnings)
+    assert not any("ANTHROPIC_API_KEY" in w for w in result.warnings)
 
 
 def test_build_fills_expected_and_validates():
@@ -113,6 +151,53 @@ def test_reference_crash_drops_that_case():
     names = {c["name"] for c in result.question["test_cases"]}
     assert names == {"good", "performance_large"}
     assert any("malformed" in w for w in result.warnings)
+
+
+def test_agreeing_brute_force_keeps_every_case():
+    result = build_from_spec(_spec(brute_force_solution=BRUTE_PY), engine="test")
+    assert result.question is not None, result.warnings
+    names = {c["name"] for c in result.question["test_cases"]}
+    assert names == {"small", "single", "performance_large"}
+    assert not any("disagree" in w for w in result.warnings)
+
+
+def test_wrong_oracle_is_caught_by_the_brute_force():
+    """The defect the cross-check exists for: a reference that is wrong but
+    deterministic. Every expected output comes from running it, so it agrees with
+    itself and passes every other check — only an independent implementation can
+    contradict it. Here the reference doubles the answer when N == 3, so the
+    disputed case is dropped while the ones both agree on survive."""
+    result = build_from_spec(
+        _spec(reference_solution=WRONG_REF_PY, brute_force_solution=BRUTE_PY),
+        engine="test",
+    )
+    assert result.question is not None, result.warnings
+    names = {c["name"] for c in result.question["test_cases"]}
+    # 'small' (N == 3) is disputed and dropped; 'single' is agreed and kept.
+    assert names == {"single", "performance_large"}
+    assert any("small" in w and "disagree" in w for w in result.warnings)
+    # The brute force is never run on the performance input — it would be far too
+    # slow — so that case is unaffected by the cross-check.
+    perf = next(c for c in result.question["test_cases"] if c["name"] == "performance_large")
+    assert perf["expected"] == str(PERF_SUM)
+
+
+def test_missing_brute_force_warns_that_the_oracle_is_unverified():
+    result = build_from_spec(_spec(), engine="test")
+    assert result.question is not None, result.warnings
+    assert any("unverified" in w for w in result.warnings)
+
+
+def test_broken_brute_force_degrades_to_a_warning():
+    # A second opinion that cannot compile leaves the reference unverified, which
+    # is no worse than not asking for one — the question must still be built.
+    result = build_from_spec(
+        _spec(brute_force_solution="this is not valid python ((("), engine="test"
+    )
+    assert result.question is not None, result.warnings
+    names = {c["name"] for c in result.question["test_cases"]}
+    assert names == {"small", "single", "performance_large"}
+    assert any("unverified" in w for w in result.warnings)
 
 
 def test_broken_generator_rejects_question():

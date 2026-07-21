@@ -20,8 +20,12 @@ class DraftEvalCase:
     language: str
     difficulty: str | None = None
     target_complexity: str | None = None
-    # A usable question needs a few correctness edge cases, not just one.
-    min_correctness_cases: int = 3
+    # A usable question needs real edge coverage, not just one case. The prompt
+    # asks for >= 6 and aims at 8-10; measured counts are 5-8 locally and 7-10 on
+    # Sonnet. The floor sits at 4 deliberately: high enough to catch the "several"
+    # regression (a vague quantifier let a weaker model ship 3), low enough to
+    # absorb one dropped case plus normal run-to-run variance.
+    min_correctness_cases: int = 4
     note: str = ""
 
 

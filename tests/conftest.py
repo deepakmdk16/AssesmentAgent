@@ -22,6 +22,21 @@ def _auth_disabled_by_default(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _pin_provider_anthropic(monkeypatch):
+    """Pin the LLM provider so no test silently reaches a live backend.
+
+    In production `provider()` auto-falls-back to the local Ollama model when
+    `ANTHROPIC_API_KEY` is absent. That is exactly what we do NOT want by default
+    in the suite — a keyless pipeline test would try to hit a real Ollama server.
+    Pinning `anthropic` restores the historical default (no key → offline
+    heuristic via the Anthropic branch's fall-through); tests that exercise the
+    Ollama path set `ASSESS_LLM_PROVIDER=ollama` themselves, and the auto-default
+    itself is covered directly in `test_llm.py`.
+    """
+    monkeypatch.setenv("ASSESS_LLM_PROVIDER", "anthropic")
+
+
+@pytest.fixture(autouse=True)
 def _reset_rate_limiter():
     """The limiter is a process-global singleton keyed by client IP, and the
     TestClient's IP is constant — so without a reset, hits accumulate across the
