@@ -24,6 +24,7 @@ import sys
 from .agent import assess
 from .authoring import draft_question
 from .draft_eval_cases import DRAFT_EVAL_CASES, DraftEvalCase
+from .llm import provider
 from .loader import question_from_dict
 
 
@@ -36,7 +37,10 @@ def _check(case: DraftEvalCase) -> tuple[str, str]:
         target_complexity=case.target_complexity,
     )
     if result.question is None:
-        if not os.environ.get("ANTHROPIC_API_KEY"):
+        # SKIP means "no backend was configured", not "the backend failed". With a
+        # local provider selected there IS a backend, so an empty draft is a real
+        # FAIL — otherwise a broken local model would report a clean sheet.
+        if provider() == "anthropic" and not os.environ.get("ANTHROPIC_API_KEY"):
             return "SKIP", "no ANTHROPIC_API_KEY"
         return "FAIL", "no usable question: " + "; ".join(result.warnings)
 

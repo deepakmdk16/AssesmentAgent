@@ -33,12 +33,17 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from .constants import OFFLINE_ENGINE, PERFORMANCE
-from .llm import client_timeout_s, wrap_untrusted
+from .llm import client_timeout_s, ollama_chat, ollama_model, provider, wrap_untrusted
 from .pricing import Usage
 from .questions import Question, TestCase
 from .runner import run_submission
 
 _PROMPT = (Path(__file__).parent / "prompts" / "adversarial_gen.md").read_text().strip()
+
+# Just off greedy for the local provider: enough to break out of a repetition
+# loop, low enough that the proposed edges stay deliberate rather than random.
+# The Claude path is unaffected.
+_OLLAMA_TEMPERATURE = 0.3
 
 # Guardrail on model-supplied inputs: skip anything absurdly large so a runaway
 # generation can't blow up the worker's memory before the runner's limits bite.
@@ -140,23 +145,91 @@ def probe_adversarial(*, question: Question, language: str, source: str) -> Adve
     """Generate adversarial inputs with Claude, run them through the deterministic
     runner, and report crashes/timeouts. Advisory only — the caller must not let
     the result affect the score or verdict."""
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    use_ollama = provider() == "ollama"
+    if not use_ollama and not os.environ.get("ANTHROPIC_API_KEY"):
         return _offline_report()
     config = AdversarialConfig.from_env()
+    engine = ollama_model() if use_ollama else config.engine_label
     # This is advisory: a generation failure (truncated/invalid JSON, network,
     # refusal, ...) must NEVER abort the assessment. Degrade to an empty report
     # with the reason noted, so the verdict — already decided from execution —
     # stands untouched.
     try:
-        cases, usage = _generate_cases(config, question, language, source)
+        if use_ollama:
+            cases, usage = _generate_cases_ollama(config, question, language, source)
+        else:
+            cases, usage = _generate_cases(config, question, language, source)
     except Exception as exc:
         return AdversarialReport(
-            engine=config.engine_label,
+            engine=engine,
             probed=0,
             findings=[],
             summary=f"Adversarial probing failed (advisory — verdict unaffected): {exc}",
         )
-    return _run_and_classify(cases, language, source, question, config.engine_label, usage)
+    return _run_and_classify(cases, language, source, question, engine, usage)
+
+
+def _gen_user_content(num_cases: int, question: Question, language: str, source: str) -> str:
+    """The adversarial generator's user turn — shared by the Claude and Ollama
+    paths so both see identical inputs. The candidate submission is fenced as
+    untrusted in either case."""
+    example = ""
+    if question.example_input is not None or question.example_output is not None:
+        example = (
+            f"\n\nWORKED EXAMPLE:\nInput:\n{question.example_input or ''}\n"
+            f"Output:\n{question.example_output or ''}"
+        )
+    return (
+        f"PROBLEM STATEMENT:\n{question.prompt}\n\n"
+        f"CONSTRAINTS:\n{question.constraints}{example}\n\n"
+        f"LANGUAGE: {language}\n\n"
+        f"CANDIDATE SUBMISSION:\n"
+        + wrap_untrusted("candidate_submission", f"```{language}\n{source}\n```")
+        + f"\n\nPropose up to {num_cases} adversarial input cases."
+    )
+
+
+def _parse_cases(text: str, *, truncated: bool) -> list[GeneratedCase]:
+    """Parse the generator's JSON into cases, with a truncation hint. Shared by
+    both providers; generated cases are advisory and re-run through the runner."""
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        hint = " (response truncated — raise max_tokens)" if truncated else ""
+        raise RuntimeError(f"Adversarial generator returned invalid JSON{hint}: {exc}") from exc
+    return [GeneratedCase.model_validate(c) for c in data.get("cases", [])]
+
+
+def _generate_cases_ollama(
+    config: AdversarialConfig, question: Question, language: str, source: str
+) -> tuple[list[GeneratedCase], Usage]:
+    """Generate adversarial cases with a local Ollama model. Advisory and
+    non-gating like the Claude path; cost zero (local model absent from PRICING).
+
+    Unlike the judge, this surface runs slightly above greedy. It emits a list of
+    many similar-looking `stdin` blobs, which is exactly the shape that traps
+    temperature-0 decoding in a repetition loop (see `ollama_chat`). The output is
+    a set of probe *inputs* that get re-executed by the deterministic runner
+    anyway, so run-to-run variation costs nothing here — whereas a locked loop
+    costs the whole surface.
+    """
+    model = ollama_model()
+    text, in_tokens, out_tokens = ollama_chat(
+        model=model,
+        system=_PROMPT,
+        user=_gen_user_content(config.num_cases, question, language, source),
+        json_schema=_GEN_SCHEMA,
+        temperature=_OLLAMA_TEMPERATURE,
+    )
+    cases = _parse_cases(text, truncated=False)
+    usage = Usage(
+        model=model,
+        input_tokens=in_tokens,
+        output_tokens=out_tokens,
+        cache_read_input_tokens=0,
+        cache_creation_input_tokens=0,
+    )
+    return cases, usage
 
 
 def _generate_cases(
@@ -166,20 +239,7 @@ def _generate_cases(
 
     client = anthropic.Anthropic(timeout=client_timeout_s())
 
-    example = ""
-    if question.example_input is not None or question.example_output is not None:
-        example = (
-            f"\n\nWORKED EXAMPLE:\nInput:\n{question.example_input or ''}\n"
-            f"Output:\n{question.example_output or ''}"
-        )
-    user_content = (
-        f"PROBLEM STATEMENT:\n{question.prompt}\n\n"
-        f"CONSTRAINTS:\n{question.constraints}{example}\n\n"
-        f"LANGUAGE: {language}\n\n"
-        f"CANDIDATE SUBMISSION:\n"
-        + wrap_untrusted("candidate_submission", f"```{language}\n{source}\n```")
-        + f"\n\nPropose up to {config.num_cases} adversarial input cases."
-    )
+    user_content = _gen_user_content(config.num_cases, question, language, source)
 
     output_config: dict = {"format": {"type": "json_schema", "schema": _GEN_SCHEMA}}
     if config.effort:
@@ -213,17 +273,7 @@ def _generate_cases(
             f"Adversarial generator returned no text (stop_reason={response.stop_reason})"
         )
 
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as exc:
-        hint = (
-            " (response truncated — raise max_tokens)"
-            if response.stop_reason == "max_tokens"
-            else ""
-        )
-        raise RuntimeError(f"Adversarial generator returned invalid JSON{hint}: {exc}") from exc
-
-    cases = [GeneratedCase.model_validate(c) for c in data.get("cases", [])]
+    cases = _parse_cases(text, truncated=response.stop_reason == "max_tokens")
     u = response.usage
     usage = Usage(
         model=config.model,

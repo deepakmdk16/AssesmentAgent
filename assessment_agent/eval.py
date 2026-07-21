@@ -18,6 +18,7 @@ import sys
 from .agent import assess
 from .constants import OFFLINE_ENGINE, SKIPPED_ENGINE
 from .eval_cases import EVAL_CASES
+from .llm import provider
 from .questions import QUESTIONS
 
 
@@ -135,6 +136,11 @@ def main(argv: list[str] | None = None) -> int:
             f" ({total_in} in / {total_out} out tokens, {total_cache_read} cache-read)."
         )
         print(f"Average per candidate: ${avg:.4f}  →  ~${avg * 1000:.2f} per 1,000 candidates.")
+    elif provider() == "ollama":
+        # A local model is a real judge call, it just has no per-token price. Saying
+        # "offline heuristic" here would misreport a genuine Qwen run as never
+        # having reached a model.
+        print(f"\nNo per-token cost — judged locally on {engine}.")
     else:
         print("\nNo priced judge calls (offline heuristic) — set ANTHROPIC_API_KEY for real cost.")
 

@@ -13,8 +13,11 @@ The idea: a detailed rubric + calibration examples (see rubric.py / prompts/)
 replaces most of the runtime reasoning, so a smaller model with thinking off
 approaches Opus-with-thinking at a fraction of the token cost.
 
-When no API key is set, a deterministic offline heuristic runs so the whole
-pipeline is testable with no key.
+Provider selection lives in `llm.py`. With no `ANTHROPIC_API_KEY` the default is
+the local Ollama model (`ASSESS_LLM_PROVIDER=ollama`, see `llm.provider`); the
+deterministic offline heuristic is the final fall-through — reached when Anthropic
+is selected but no key is present — so the pipeline still runs with neither a key
+nor a local model.
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ from dataclasses import dataclass
 from pydantic import BaseModel, Field
 
 from .constants import FAILED_ENGINE, OFFLINE_ENGINE
-from .llm import client_timeout_s, wrap_untrusted
+from .llm import client_timeout_s, ollama_chat, ollama_model, provider, wrap_untrusted
 from .pricing import Usage
 from .rubric import SYSTEM_PROMPT
 
@@ -167,6 +170,15 @@ def assess_quality(
     (CONVENTIONS.md §1), so a judge failure degrades to `failed_assessment` —
     the caller's verdict, already decided from execution alone, stands.
     """
+    if provider() == "ollama":
+        try:
+            assessment, usage = _assess_with_ollama(
+                question_prompt, constraints, language, source, execution_summary
+            )
+        except Exception as exc:
+            logger.warning("quality judge (ollama) failed (verdict unaffected): %s", exc)
+            return failed_assessment(str(exc)), FAILED_ENGINE, None
+        return assessment, usage.model, usage
     if os.environ.get("ANTHROPIC_API_KEY"):
         config = JudgeConfig.from_env()
         try:
@@ -178,6 +190,55 @@ def assess_quality(
             return failed_assessment(str(exc)), FAILED_ENGINE, None
         return assessment, config.engine_label, usage
     return _assess_offline(source, execution_summary, performance_ok), OFFLINE_ENGINE, None
+
+
+def _user_content(
+    question_prompt: str,
+    constraints: str,
+    language: str,
+    source: str,
+    execution_summary: str,
+) -> str:
+    """The judge's user turn — shared verbatim by the Claude and Ollama paths so
+    the two backends see identical inputs and can't drift apart."""
+    return (
+        f"PROBLEM STATEMENT:\n{question_prompt}\n\n"
+        f"CONSTRAINTS:\n{constraints}\n\n"
+        f"LANGUAGE: {language}\n\n"
+        f"AUTOMATED TEST RESULTS (ground truth for correctness and timing; a TLE "
+        f"marks a case that exceeded the time limit):\n{execution_summary}\n\n"
+        f"CANDIDATE SUBMISSION:\n"
+        + wrap_untrusted("candidate_submission", f"```{language}\n{source}\n```")
+    )
+
+
+def _assess_with_ollama(
+    question_prompt: str,
+    constraints: str,
+    language: str,
+    source: str,
+    execution_summary: str,
+) -> tuple[QualityAssessment, Usage]:
+    """Judge via a local Ollama model. Same prompt + schema as the Claude path;
+    cost is zero (the local model is absent from PRICING, so Usage.cost_usd is
+    0.0). Structured output is requested but still validated, since a local model
+    honours the schema less reliably than Claude."""
+    model = ollama_model()
+    text, in_tokens, out_tokens = ollama_chat(
+        model=model,
+        system=SYSTEM_PROMPT,
+        user=_user_content(question_prompt, constraints, language, source, execution_summary),
+        json_schema=_QUALITY_SCHEMA,
+    )
+    assessment = _parse_assessment(text, stop_reason=None)
+    usage = Usage(
+        model=model,
+        input_tokens=in_tokens,
+        output_tokens=out_tokens,
+        cache_read_input_tokens=0,
+        cache_creation_input_tokens=0,
+    )
+    return assessment, usage
 
 
 def _assess_with_claude(
@@ -192,15 +253,7 @@ def _assess_with_claude(
 
     client = anthropic.Anthropic(timeout=client_timeout_s())
 
-    user_content = (
-        f"PROBLEM STATEMENT:\n{question_prompt}\n\n"
-        f"CONSTRAINTS:\n{constraints}\n\n"
-        f"LANGUAGE: {language}\n\n"
-        f"AUTOMATED TEST RESULTS (ground truth for correctness and timing; a TLE "
-        f"marks a case that exceeded the time limit):\n{execution_summary}\n\n"
-        f"CANDIDATE SUBMISSION:\n"
-        + wrap_untrusted("candidate_submission", f"```{language}\n{source}\n```")
-    )
+    user_content = _user_content(question_prompt, constraints, language, source, execution_summary)
 
     output_config: dict = {"format": {"type": "json_schema", "schema": _QUALITY_SCHEMA}}
     if config.effort:

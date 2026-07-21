@@ -19,6 +19,7 @@ import sys
 
 from .adversarial import probe_adversarial
 from .adversarial_eval_cases import ADVERSARIAL_EVAL_CASES, AdversarialEvalCase
+from .llm import provider
 from .questions import QUESTIONS
 
 
@@ -30,7 +31,9 @@ def _check(case: AdversarialEvalCase) -> tuple[str, str]:
         source=case.source,
     )
     if report.probed == 0:
-        if not os.environ.get("ANTHROPIC_API_KEY"):
+        # SKIP means "no backend was configured", not "the backend failed" — see
+        # the same guard in draft_eval.py.
+        if provider() == "anthropic" and not os.environ.get("ANTHROPIC_API_KEY"):
             return "SKIP", "no ANTHROPIC_API_KEY"
         return "FAIL", f"generated/ran 0 cases: {report.summary}"
     if report.findings:
