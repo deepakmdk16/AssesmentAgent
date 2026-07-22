@@ -46,6 +46,25 @@ else
   echo "  ℹ️  companion repo not checked out beside this one — parity check skipped"
 fi
 
+echo "==> callback contract parity (cross-repo)"
+# contract/callback_contract.py is the agent->platform callback envelope, mirrored
+# byte-for-byte in the companion repo. If the two diverge, one side can bless a
+# payload the other rejects. Same gate as signing.py; skips when the companion
+# repo isn't checked out beside this one. See contract/callback_contract.py.
+_own_contract="contract/callback_contract.py"
+_companion_contract="../assessment-platform/contract/callback_contract.py"
+if [ -f "$_companion_contract" ]; then
+  if cmp -s "$_own_contract" "$_companion_contract"; then
+    echo "  ✓ identical to companion repo"
+  else
+    echo "  ❌ $_own_contract differs from the companion repo's copy:"
+    diff "$_own_contract" "$_companion_contract" | sed 's/^/     /' || true
+    echo "  the callback contract must stay byte-identical — update BOTH."; exit 1
+  fi
+else
+  echo "  ℹ️  companion repo not checked out beside this one — contract parity skipped"
+fi
+
 echo "==> docs drift"
 # CLAUDE.md loads every session and README.md is the front door, so a stale one
 # misleads every future reader — human or agent. Checkpoint #5 already made
