@@ -89,6 +89,11 @@ belongs in the module docstring.
   link (mirrored verbatim in the platform repo — kept identical by
   `scripts/checkpoints.sh`, which fails the push on divergence; inbound requests +
   the outbound callback are signed when the signing secrets are configured).
+- `contract/callback_contract.py` (repo root, not the package) — the narrow
+  callback envelope the platform reads by name (`job_id`, `verdict`, `score_pct`,
+  `reason`). Mirrored byte-for-byte in the platform repo (parity-gated by
+  `checkpoints.sh`, like `signing.py`); `tests/test_contract.py` asserts
+  `result_to_dict` still emits a conforming payload.
 - `report.py` — PDF rendering. `mailer.py` — Gmail SMTP delivery.
 - `pricing.py` — token/cost estimation.
 
