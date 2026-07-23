@@ -73,6 +73,36 @@ A single question with:
 - `pass_threshold` — fraction of weighted score to PASS (default 0.9).
 - `required_complexity` — the advisory target Big-O (e.g. "O(N log N)"), or null.
 
+## Calibrating to the requested difficulty
+
+The interviewer turn may carry a `DIFFICULTY: easy | medium | hard` hint. Treat it
+as instructions for three concrete levers, **not** a label to repeat in the
+prompt. Absent a hint, draft to **medium**. Whatever you choose, keep the levers
+consistent with one another — the `constraints` you state, the reference's actual
+complexity, `required_complexity`, and the `performance_generator`'s size must all
+agree with the difficulty. An "easy" question whose constraints force a segment
+tree is mis-labelled; a "hard" one a single loop clears is not hard.
+
+- **easy** — one idea a competent candidate reaches directly (a single loop, a
+  hash map, a sort, prefix sums). Constraints modest (N up to ~10^4): a
+  straightforward O(N) / O(N log N) pass is the intended solution, not a trick.
+  Edge cases: the obvious boundaries (minimum size, empty/degenerate, negatives).
+- **medium** — one well-known technique applied with care (two pointers, a heap,
+  binary search on the answer, one DP dimension, BFS/DFS). Constraints large
+  enough (N up to ~10^5) that the naive O(N^2) exceeds the limit, so the technique
+  is forced. Edge cases: the boundaries **plus** at least one that punishes the
+  plausible-but-wrong approach.
+- **hard** — a non-obvious modelling step or two techniques composed (DP over a
+  non-trivial state, a graph reduction, a greedy needing an exchange argument).
+  Constraints/values large enough that even an O(N log N) with poor constant
+  factors or memory is at risk, or the complexity bound is itself the insight.
+  Edge cases: boundaries plus cases that break the *tempting shortcut* — the
+  off-by-one in the clever bound, the integer overflow, the tie-break a greedy
+  gets wrong.
+
+The correctness checklist and `time_limit_s` do not change with difficulty; only
+the constraint size, algorithmic depth, and edge-case emphasis above do.
+
 ## What "optimal" means for the reference solution
 
 The reference is the oracle *and* the implicit model answer, so it must be the

@@ -91,6 +91,17 @@ processes"** (now delivered by nsjail's cgroup controllers above):
   baselines below already show real drafts at 5–10 correctness (well above 4), so
   the floor should reject nothing real — but checkpoint #4 still wants an
   `assess-draft-eval` run with a live/local model to confirm before relying on it.
+- **Difficulty now has prompt semantics (T3) — efficacy UNVERIFIED offline.**
+  `DIFFICULTY: easy|medium|hard` used to be a bare label with no meaning;
+  `question_draft.md` now has a "Calibrating to the requested difficulty" section
+  tying each level to concrete levers (constraint size → forced complexity,
+  algorithmic depth, edge-case emphasis). The change loads and breaks no unit test,
+  but its **entire point is to shift LLM output**, and nothing offline measures
+  that — the current `assess-draft-eval` only checks a draft grades PASS 100%, not
+  that "hard" is harder than "easy". Owed before relying on it: (1) an
+  `assess-draft-eval` re-run to confirm no drafting regression, and ideally (2) new
+  eval cases that draft the *same* brief at easy/medium/hard and assert the
+  constraint sizes / required complexity actually diverge.
 - **Candidate-feedback agent (cross-repo, not yet chosen).** Once the platform can
   surface it — actionable feedback to candidates. Spans both repos.
 - **Multiple examples per question (deferred).** `Question`/loader/report hold a
