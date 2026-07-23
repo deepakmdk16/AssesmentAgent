@@ -145,7 +145,10 @@ def _q(**over) -> Question:
         prompt="p",
         constraints="c",
         test_cases=(
-            TestCase("ok", "1\n", "1"),
+            TestCase("ok1", "1\n", "1"),
+            TestCase("ok2", "2\n", "2"),
+            TestCase("ok3", "3\n", "3"),
+            TestCase("ok4", "4\n", "4"),
             TestCase("perf", "1\n", "1", category="performance", weight=6.0),
         ),
     )

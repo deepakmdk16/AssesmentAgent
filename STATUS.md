@@ -84,6 +84,13 @@ processes"** (now delivered by nsjail's cgroup controllers above):
   `a[i] == 2*a[j]` boundary). A correct candidate still fails on a rule the prompt
   never stated. Also 1/5 still used `queue<>` with only `<stack>` included — it
   builds on libc++ via a transitive include and would fail elsewhere.
+- **Test-case floor landed (F4) — draft-eval re-run still owed.** `validate_question`
+  now requires **≥ 4 correctness cases** (`MIN_CORRECTNESS_CASES`, exempts the perf
+  case), matching the draft-eval's `min_correctness_cases`, so both hand-authored
+  and AI-drafted questions must clear it. Offline unit tests updated + green. The
+  baselines below already show real drafts at 5–10 correctness (well above 4), so
+  the floor should reject nothing real — but checkpoint #4 still wants an
+  `assess-draft-eval` run with a live/local model to confirm before relying on it.
 - **Candidate-feedback agent (cross-repo, not yet chosen).** Once the platform can
   surface it — actionable feedback to candidates. Spans both repos.
 - **Multiple examples per question (deferred).** `Question`/loader/report hold a

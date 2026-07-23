@@ -49,7 +49,10 @@ def _minimal_spec() -> dict:
         "prompt": "p",
         "constraints": "c",
         "test_cases": [
-            {"name": "ok", "stdin": "1\n", "expected": "1"},
+            {"name": "ok1", "stdin": "1\n", "expected": "1"},
+            {"name": "ok2", "stdin": "2\n", "expected": "2"},
+            {"name": "ok3", "stdin": "3\n", "expected": "3"},
+            {"name": "ok4", "stdin": "4\n", "expected": "4"},
             {
                 "name": "perf",
                 "stdin": "1\n",

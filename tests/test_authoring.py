@@ -56,6 +56,9 @@ def _spec(**overrides) -> DraftSpec:
         correctness_inputs=[
             {"name": "small", "stdin": "3\n1 2 3\n"},
             {"name": "single", "stdin": "1\n5\n"},
+            {"name": "pair", "stdin": "2\n10 20\n"},
+            {"name": "quad", "stdin": "4\n1 1 1 1\n"},
+            {"name": "quint", "stdin": "5\n2 2 2 2 2\n"},
         ],
         performance_generator=GEN_PY,
         required_complexity="O(N)",
@@ -126,6 +129,11 @@ def test_example_uses_first_surviving_case_with_oracle_output():
             correctness_inputs=[
                 {"name": "bad", "stdin": "xyz\n"},
                 {"name": "ok", "stdin": "2\n10 20\n"},
+                # Padding so enough correctness cases survive the drop to clear the
+                # floor; the example still comes from the first survivor ("ok").
+                {"name": "p2", "stdin": "1\n7\n"},
+                {"name": "p3", "stdin": "3\n1 1 1\n"},
+                {"name": "p4", "stdin": "4\n2 2 2 2\n"},
             ]
         ),
         engine="test",
@@ -143,13 +151,17 @@ def test_reference_crash_drops_that_case():
             correctness_inputs=[
                 {"name": "good", "stdin": "2\n4 6\n"},
                 {"name": "malformed", "stdin": "abc\n"},
+                # Padding so the survivors still clear the correctness-case floor.
+                {"name": "g2", "stdin": "1\n9\n"},
+                {"name": "g3", "stdin": "3\n1 2 3\n"},
+                {"name": "g4", "stdin": "4\n5 5 5 5\n"},
             ]
         ),
         engine="test",
     )
     assert result.question is not None, result.warnings
     names = {c["name"] for c in result.question["test_cases"]}
-    assert names == {"good", "performance_large"}
+    assert names == {"good", "g2", "g3", "g4", "performance_large"}
     assert any("malformed" in w for w in result.warnings)
 
 
@@ -157,7 +169,7 @@ def test_agreeing_brute_force_keeps_every_case():
     result = build_from_spec(_spec(brute_force_solution=BRUTE_PY), engine="test")
     assert result.question is not None, result.warnings
     names = {c["name"] for c in result.question["test_cases"]}
-    assert names == {"small", "single", "performance_large"}
+    assert names == {"small", "single", "pair", "quad", "quint", "performance_large"}
     assert not any("disagree" in w for w in result.warnings)
 
 
@@ -173,8 +185,9 @@ def test_wrong_oracle_is_caught_by_the_brute_force():
     )
     assert result.question is not None, result.warnings
     names = {c["name"] for c in result.question["test_cases"]}
-    # 'small' (N == 3) is disputed and dropped; 'single' is agreed and kept.
-    assert names == {"single", "performance_large"}
+    # 'small' (N == 3) is disputed and dropped; the other N != 3 cases are agreed
+    # and kept (and enough survive to clear the correctness-case floor).
+    assert names == {"single", "pair", "quad", "quint", "performance_large"}
     assert any("small" in w and "disagree" in w for w in result.warnings)
     # The brute force is never run on the performance input — it would be far too
     # slow — so that case is unaffected by the cross-check.
@@ -196,7 +209,7 @@ def test_broken_brute_force_degrades_to_a_warning():
     )
     assert result.question is not None, result.warnings
     names = {c["name"] for c in result.question["test_cases"]}
-    assert names == {"small", "single", "performance_large"}
+    assert names == {"small", "single", "pair", "quad", "quint", "performance_large"}
     assert any("unverified" in w for w in result.warnings)
 
 
