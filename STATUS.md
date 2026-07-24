@@ -228,9 +228,10 @@ code never leaving the machine; **the adversarial probe is flaky — see below.*
   leave it off or point it at Claude until this is understood. Next step is to
   find whether the malformed JSON is specific to this question's schema/size or a
   general structured-output weakness at 30B.
-  Still worth a fix: the harness's failure line reads "drew a finding (false
-  positive)" even when the real cause was a timeout or a parse error with zero
-  findings — it sends you after the wrong thing.
+  **Fixed (2026-07-24):** the harness used to print "drew a finding (false
+  positive)" for *every* failure, even a 0-case generation (a timeout or
+  unparseable output). `_check` now returns distinct `EMPTY` vs `FINDING`
+  statuses and the summary prints the guidance that matches the actual cause.
 
 #### Greedy decoding traps a local model — both generative surfaces
 
