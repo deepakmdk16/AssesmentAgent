@@ -322,14 +322,9 @@ def report(req: ReportRequest) -> Response:
     full `question` and the candidate `code`. We reconstruct the rich result and
     hand it to the same `build_report_pdf` the CLI/email path uses. No LLM, no code
     execution, so no rate-limit bucket — just the shared-secret + signature gates.
-
-    NOTE (cross-branch): `question_from_dict` here still enforces the authoring
-    invariants, so a pre-floor question would 400 at render time. Once the grade-
-    path degrade lands (agent STATUS "F4"), thread `degrade_authoring=True` through
-    so rendering never re-rejects an already-graded question.
     """
     try:
-        question = question_from_dict(req.question)
+        question, _warnings = question_from_dict(req.question, degrade_authoring=True)
         result = result_from_dict(req.result, question=question, source=req.code)
     except (KeyError, TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=f"malformed report payload: {exc}") from exc
@@ -399,8 +394,11 @@ def run_tests(req: RunTestsRequest) -> dict:
     returns full detail, which is what the interviewer's report card reads.
     """
     _require_language(req.language)
+    # Candidate-facing rehearsal of the grade path — degrade authoring-shape
+    # invariants to warnings (same as /assessments) so a pre-floor question runs
+    # instead of 400ing the candidate.
     try:
-        question = question_from_dict(req.question)
+        question, warnings = question_from_dict(req.question, degrade_authoring=True)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"invalid question: {exc}") from None
 
@@ -419,6 +417,7 @@ def run_tests(req: RunTestsRequest) -> dict:
             }
             for o in report.outcomes
         ],
+        "warnings": warnings,
     }
 
 
@@ -439,9 +438,12 @@ def create_assessment(req: AssessmentRequest, background: BackgroundTasks) -> di
             detail=f"unsupported language {req.language!r}; expected one of {sorted(LANGUAGES)}.",
         )
     # Validate the inline question up front so a malformed one is a synchronous 400,
-    # not a background failure the caller never sees.
+    # not a background failure the caller never sees. This is the grade/intake path:
+    # authoring-shape invariants (case-count floor, required performance case) degrade
+    # to warnings carried in the result rather than 400 the candidate for a question
+    # shape only the interviewer can fix. Structural problems still 400.
     try:
-        question = question_from_dict(req.question)
+        question, warnings = question_from_dict(req.question, degrade_authoring=True)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"invalid question: {exc}") from None
 
@@ -459,7 +461,7 @@ def create_assessment(req: AssessmentRequest, background: BackgroundTasks) -> di
         bool(req.callback_url),
         bool(req.email_to),
     )
-    background.add_task(_run_job, job_id, req, question)
+    background.add_task(_run_job, job_id, req, question, warnings)
     return {"job_id": job_id, "status": "accepted"}
 
 
@@ -489,11 +491,13 @@ def _record_job(job_id: str, state: dict[str, Any]) -> None:
         _JOBS.popitem(last=False)  # evict oldest
 
 
-def _run_job(job_id: str, req: AssessmentRequest, question) -> None:
+def _run_job(job_id: str, req: AssessmentRequest, question, warnings: list[str]) -> None:
     """Background worker: assess, then deliver the result via callback and/or email."""
     started = time.perf_counter()
     try:
-        result = assess(req.code, req.language, question, adversarial=req.adversarial)
+        result = assess(
+            req.code, req.language, question, adversarial=req.adversarial, warnings=warnings
+        )
         payload = result_to_dict(result)
         payload["candidate"] = req.candidate
         payload["job_id"] = job_id

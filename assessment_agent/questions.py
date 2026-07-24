@@ -169,12 +169,47 @@ KNAPSACK_QUESTION = Question(
 QUESTIONS: dict[str, Question] = {q.id: q for q in (HARDCODED_QUESTION, KNAPSACK_QUESTION)}
 
 
-def validate_question(q: Question) -> None:
+def _authoring_shape_problems(q: Question) -> list[str]:
+    """The **authoring-only** invariants, split out so the grade/intake path can
+    downgrade them to warnings while authoring/drafting keeps them hard.
+
+    A submission still grades correctly against a question that violates these —
+    they make a question a *good* assessment, not a *runnable* one — so on the path
+    the interviewer can't fix (a candidate's live submission) they must not hard-
+    fail. Order matches the original check order: performance case first, then the
+    correctness floor.
+    """
+    problems: list[str] = []
+    if not any(t.category == PERFORMANCE for t in q.test_cases):
+        problems.append(
+            f"question {q.id!r}: needs at least one 'performance' test case "
+            "(the constraint-sized TLE gate that catches too-slow solutions)"
+        )
+    n_correctness = sum(1 for t in q.test_cases if t.category == CORRECTNESS)
+    if n_correctness < MIN_CORRECTNESS_CASES:
+        problems.append(
+            f"question {q.id!r}: needs at least {MIN_CORRECTNESS_CASES} 'correctness' "
+            f"test cases, has {n_correctness} (the performance case is exempt)"
+        )
+    return problems
+
+
+def validate_question(q: Question, *, degrade_authoring: bool = False) -> list[str]:
     """Structural invariants every Question must satisfy, independent of which
-    problem it encodes. Shared by the generic test suite and the Phase 2 loader
-    (which validates interviewer-supplied questions before grading). Raises
-    ValueError on the first problem found; returns None when the question is
-    well-formed.
+    problem it encodes. Shared by the generic test suite, the Phase 2 loader, and
+    the API/CLI grade-time intake.
+
+    Raises ValueError on the first *structural* problem — one that leaves the
+    question malformed or impossible to grade. The two **authoring-shape** invariants
+    (a required performance case and the `MIN_CORRECTNESS_CASES` correctness floor,
+    see `_authoring_shape_problems`) are hard by default — where the invariant
+    belongs, at authoring/drafting time. Pass ``degrade_authoring=True`` on the
+    grade/intake path to collect them as **warnings** and keep grading, so a
+    candidate is never rejected for the interviewer's question shape (CONVENTIONS.md
+    — degrade gracefully when tightening a shared invariant).
+
+    Returns the downgraded warnings — empty unless ``degrade_authoring`` and a
+    shape invariant was actually violated.
     """
     if not q.id.strip():
         raise ValueError("question id must be non-empty")
@@ -202,20 +237,15 @@ def validate_question(q: Question) -> None:
         if t.expected == "":
             raise ValueError(f"question {q.id!r}: test case {t.name!r} has empty expected output")
 
-    if not any(t.category == PERFORMANCE for t in q.test_cases):
-        raise ValueError(
-            f"question {q.id!r}: needs at least one 'performance' test case "
-            "(the constraint-sized TLE gate that catches too-slow solutions)"
-        )
-    n_correctness = sum(1 for t in q.test_cases if t.category == CORRECTNESS)
-    if n_correctness < MIN_CORRECTNESS_CASES:
-        raise ValueError(
-            f"question {q.id!r}: needs at least {MIN_CORRECTNESS_CASES} 'correctness' "
-            f"test cases, has {n_correctness} (the performance case is exempt)"
-        )
+    problems = _authoring_shape_problems(q)
+    if problems and not degrade_authoring:
+        raise ValueError(problems[0])
+
     if not (0.0 < q.pass_threshold <= 1.0):
         raise ValueError(
             f"question {q.id!r}: pass_threshold must be in (0, 1], got {q.pass_threshold}"
         )
     if q.time_limit_s <= 0:
         raise ValueError(f"question {q.id!r}: time_limit_s must be > 0, got {q.time_limit_s}")
+
+    return problems if degrade_authoring else []

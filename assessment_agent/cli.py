@@ -176,15 +176,18 @@ def main(argv: list[str] | None = None) -> int:
     if language is None:
         parser.error(f"could not detect language from {path.name!r}; pass --language explicitly.")
 
+    warnings: list[str] = []
     if args.question_file:
         from .loader import load_question
 
-        question = load_question(args.question_file)
+        # Grade path: downgrade authoring-shape invariants to warnings rather than
+        # reject a pre-floor interviewer question.
+        question, warnings = load_question(args.question_file, degrade_authoring=True)
     else:
         question = QUESTIONS[args.question]
 
     source = path.read_text()
-    result = assess(source, language, question, adversarial=args.adversarial)
+    result = assess(source, language, question, adversarial=args.adversarial, warnings=warnings)
     if args.json:
         print(json.dumps(result_to_dict(result), indent=2))
     else:

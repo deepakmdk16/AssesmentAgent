@@ -186,3 +186,35 @@ def _q(**over) -> Question:
 def test_validate_question_rejects_malformed(bad, match):
     with pytest.raises(ValueError, match=match):
         validate_question(_q(**bad))
+
+
+# --------------------------------------------------------------------------- #
+# The case-count floor is an AUTHORING invariant: hard when authoring, but on the
+# grade/intake path it degrades to a warning so a pre-floor question still grades
+# instead of 400ing the candidate (F4).
+# --------------------------------------------------------------------------- #
+def _under_floor() -> Question:
+    return _q(
+        test_cases=(
+            TestCase("ok1", "1\n", "1"),
+            TestCase("ok2", "2\n", "2"),
+            TestCase("ok3", "3\n", "3"),
+            TestCase("perf", "1\n", "1", category="performance", weight=6.0),
+        )
+    )
+
+
+def test_case_floor_is_hard_when_authoring():
+    with pytest.raises(ValueError, match="correctness"):
+        validate_question(_under_floor())  # default (authoring) mode
+
+
+def test_case_floor_degrades_to_warning_on_grade_path():
+    warnings = validate_question(_under_floor(), degrade_authoring=True)
+    assert any("correctness" in w for w in warnings)
+
+
+def test_structural_invariant_stays_hard_on_grade_path():
+    # Only authoring-shape invariants degrade; a broken grading parameter still raises.
+    with pytest.raises(ValueError, match="pass_threshold"):
+        validate_question(_q(pass_threshold=1.5), degrade_authoring=True)

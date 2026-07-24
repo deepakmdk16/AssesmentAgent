@@ -115,9 +115,9 @@ def test_build_fills_expected_and_validates():
     assert q["example"] == {"input": "3\n1 2 3\n", "output": "6"}
     assert "Example:" in q["prompt"] and q["prompt"].rstrip().endswith("6")
     # The drafted JSON round-trips through the same loader the intake uses...
-    question_from_dict(q)
+    question, _ = question_from_dict(q)
     # ...and grades a correct submission to PASS.
-    graded = assess(REF_PY, "python", question_from_dict(q))
+    graded = assess(REF_PY, "python", question)
     assert graded.verdict == "PASS"
 
 

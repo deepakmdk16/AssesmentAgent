@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from assessment_agent.agent import assess
+from assessment_agent.agent import assess, result_to_dict
 from assessment_agent.loader import load_question, question_from_dict
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,7 +27,7 @@ def _force_offline(monkeypatch):
 
 
 def test_example_file_loads_with_structured_fields():
-    q = load_question(EXAMPLE)
+    q, _ = load_question(EXAMPLE)
     assert q.id == "sum_of_n"
     assert q.required_complexity == "O(N)"
     assert q.example_input == "2\n3 4\n"
@@ -36,7 +36,7 @@ def test_example_file_loads_with_structured_fields():
 
 
 def test_loaded_question_grades_end_to_end():
-    q = load_question(EXAMPLE)
+    q, _ = load_question(EXAMPLE)
     result = assess(SUM_SRC, "python", q)
     assert result.verdict == "PASS"
     assert result.score_pct == 100.0
@@ -65,7 +65,7 @@ def _minimal_spec() -> dict:
 
 
 def test_optional_fields_default_to_none():
-    q = question_from_dict(_minimal_spec())
+    q, _ = question_from_dict(_minimal_spec())
     assert q.example_input is None and q.required_complexity is None
 
 
@@ -74,6 +74,33 @@ def test_missing_performance_case_is_rejected():
     spec["test_cases"] = [spec["test_cases"][0]]  # drop the performance case
     with pytest.raises(ValueError, match="performance"):
         question_from_dict(spec)
+
+
+def _three_correctness_spec() -> dict:
+    """A pre-floor question shape: 3 correctness cases (< MIN_CORRECTNESS_CASES=4)."""
+    spec = _minimal_spec()
+    spec["test_cases"] = spec["test_cases"][1:]  # drop ok1 -> ok2..ok4 + perf
+    return spec
+
+
+# Reads the first whitespace-token from stdin and echoes it — passes every case in
+# _minimal_spec (stdin "N\n" -> expected "N"), so grading can proceed offline.
+_ECHO_SRC = "import sys\nprint(sys.stdin.read().split()[0])\n"
+
+
+def test_case_floor_hard_fails_when_authoring():
+    with pytest.raises(ValueError, match="correctness"):
+        question_from_dict(_three_correctness_spec())  # default = authoring
+
+
+def test_pre_floor_question_grades_with_warning_on_intake():
+    # The F4 fix: a pre-floor question must GRADE (with a warning), not 400.
+    question, warnings = question_from_dict(_three_correctness_spec(), degrade_authoring=True)
+    assert any("correctness" in w for w in warnings)
+    result = assess(_ECHO_SRC, "python", question, warnings=warnings)
+    assert result.verdict == "PASS"
+    # The warning rides inside the opaque stored result, never the callback envelope.
+    assert result_to_dict(result)["warnings"] == warnings
 
 
 def test_bad_schema_is_rejected():
