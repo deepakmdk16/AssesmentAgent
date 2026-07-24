@@ -135,6 +135,23 @@ processes"** (now delivered by nsjail's cgroup controllers above):
   (not blocking): new eval cases that draft the *same* brief at easy/medium/hard and
   assert the constraint sizes / required complexity actually diverge — the current
   harness confirms drafts stay valid, not that "hard" is harder than "easy".
+  **Enforce, don't just instruct (raised 2026-07-24):** the difficulty→levers
+  mapping is a *soft prompt* (`question_draft.md` "Calibrating to the requested
+  difficulty"), verified only on local qwen. Difficulty IS wired end to end
+  (platform UI → `agent_client.py:131` → `DIFFICULTY:` hint → the levers, so
+  "medium binary search on the answer, N≤1e5" vs "easy direct binary search" vs
+  "hard rotated-array" is what the prompt *asks* for) — but nothing checks the model
+  obeyed. Add a **deterministic post-draft guard** that reads back the drafted
+  `constraints` / `required_complexity` and warns (or rejects) when they fall outside
+  the requested difficulty band, so calibration is checked, not hoped for.
+- **Multi-question set generation (cross-repo, enables per-candidate variants).**
+  Add an orchestration that drafts **K variants** for one brief + difficulty by
+  calling the existing single-question drafter K times (each keeps its executed-oracle
+  guarantee) — **not** one prompt asking for K questions, which dilutes each and
+  wrecks quality parity. Pin `difficulty` + `target_complexity` across the set and
+  reuse the difficulty guard above as a **parity check** so no variant is harder than
+  its siblings. Platform half (UI + orchestration trigger) tracked in
+  `../assessment-platform/STATUS.md`.
 - **Candidate-feedback agent (cross-repo, not yet chosen).** Once the platform can
   surface it — actionable feedback to candidates. Spans both repos.
 - **Net-new agent-side ideas (unscheduled).** Per-candidate unique question variants
