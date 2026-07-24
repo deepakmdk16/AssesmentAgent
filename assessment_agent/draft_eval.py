@@ -44,7 +44,8 @@ def _check(case: DraftEvalCase) -> tuple[str, str]:
             return "SKIP", "no ANTHROPIC_API_KEY"
         return "FAIL", "no usable question: " + "; ".join(result.warnings)
 
-    question = question_from_dict(result.question)
+    # Authoring/drafting path — the floor stays HARD here, so no degrade_authoring.
+    question, _ = question_from_dict(result.question)
     n_corr = sum(1 for tc in question.test_cases if tc.category == "correctness")
     n_perf = sum(1 for tc in question.test_cases if tc.category == "performance")
     if n_corr < case.min_correctness_cases:

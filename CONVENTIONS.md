@@ -58,7 +58,21 @@ Rules are phrased as "do X, not Y" on purpose — specific and local beats abstr
   The fence is not the mitigation — computing the verdict before any model call
   is — but a submission must not be able to author its own quality report.
 
-## 6. Style & enforcement
+## 6. Tightening a shared invariant — flag early, degrade gracefully
+- When you make a **shared** invariant stricter (e.g. F4 raised the correctness-case
+  floor in `validate_question`), you silently invalidate data authored under the old
+  rule. Two obligations, not one: (1) **flag** existing rows that would now fail (a
+  deploy-time / creation-time check that lists offenders), and (2) **degrade rather
+  than hard-fail** on any path where the actor hitting the check can't fix the data.
+- Concretely: an **authoring** invariant (a question needs ≥ `MIN_CORRECTNESS_CASES`
+  correctness cases and a performance case) stays **hard** where it's authored
+  (`authoring.py`, `draft_eval.py`), but on the **grade/intake** path
+  (`question_from_dict(..., degrade_authoring=True)`) it downgrades to a warning
+  carried in the result — a candidate must never eat a 400 for the interviewer's
+  question shape. Only degrade the *authoring-shape* checks; invariants that make
+  grading impossible or the schema malformed still hard-fail on every path.
+
+## 7. Style & enforcement
 - `uv run ruff check .` and `uv run mypy` must be clean before commit (or
   `pre-commit run --all-files`). Naming is `snake_case`, `_private` for helpers.
 - Docstrings explain **why**, not what. Match the density and idiom of the file

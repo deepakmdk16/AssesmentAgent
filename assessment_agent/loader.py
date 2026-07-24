@@ -56,8 +56,17 @@ class _QuestionSpec(BaseModel):
     required_complexity: str | None = None
 
 
-def question_from_dict(data: dict) -> Question:
-    """Build a validated Question from a plain dict (the parsed JSON)."""
+def question_from_dict(
+    data: dict, *, degrade_authoring: bool = False
+) -> tuple[Question, list[str]]:
+    """Build a validated Question from a plain dict (the parsed JSON).
+
+    Returns the question and any **warnings** — authoring-shape invariants that were
+    downgraded rather than raised. On the grade/intake path pass
+    ``degrade_authoring=True`` so a pre-floor question grades (with a warning)
+    instead of hard-failing the candidate; authoring/drafting leaves it False so the
+    floor stays a hard error (see `validate_question`).
+    """
     spec = _QuestionSpec.model_validate(data)
     question = Question(
         id=spec.id,
@@ -75,10 +84,18 @@ def question_from_dict(data: dict) -> Question:
     )
     # Shape is guaranteed by pydantic; this adds the semantic invariants (e.g. a
     # question must carry a performance case, weights > 0, threshold in (0, 1]).
-    validate_question(question)
-    return question
+    warnings = validate_question(question, degrade_authoring=degrade_authoring)
+    return question, warnings
 
 
-def load_question(path: str | Path) -> Question:
-    """Load and validate an interviewer-supplied question JSON file."""
-    return question_from_dict(json.loads(Path(path).read_text()))
+def load_question(
+    path: str | Path, *, degrade_authoring: bool = False
+) -> tuple[Question, list[str]]:
+    """Load and validate an interviewer-supplied question JSON file.
+
+    Returns the question and any downgraded authoring-shape warnings (see
+    `question_from_dict`).
+    """
+    return question_from_dict(
+        json.loads(Path(path).read_text()), degrade_authoring=degrade_authoring
+    )

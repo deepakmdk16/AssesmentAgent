@@ -342,8 +342,9 @@ def build_from_spec(spec: DraftSpec, *, engine: str, usage: Usage | None = None)
 
     question_dict = _to_loader_dict(spec, kept, example)
     try:
-        # Validate the same way the loader / API intake does, so the drafted
-        # question is guaranteed to round-trip and grade.
+        # Validate the same way the loader / API intake does, but keep the floor
+        # HARD here: authoring is exactly where the case-count / performance-case
+        # invariants belong, so a draft that fails them must not ship.
         question_from_dict(question_dict)
     except Exception as exc:
         warnings.append(f"Drafted question failed validation: {exc}")

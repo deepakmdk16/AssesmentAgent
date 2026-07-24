@@ -10,30 +10,21 @@ CONVENTIONS.md.
 ## Open items
 
 ### The F4 case-floor rejects pre-floor questions at grade time — P0 (cross-repo)
-`MIN_CORRECTNESS_CASES = 4` (F4) is enforced by `validate_question`, which runs on
-**every inline question at grade-time intake** (`loader.py:78` ← `question_from_dict`
-← `api.py:392`, the synchronous 400 guard). So a question authored before the floor
-existed — the platform has `grid_path_minimize` with **3** correctness cases — now
-hard-fails **every candidate submission** with `400 invalid question: … needs at
-least 4 'correctness' cases`. The platform marks the submission `error` and returns
-502; the candidate is punished for the interviewer's question shape (found in manual
-testing 2026-07-24).
-
-The defect is *where* the invariant is checked, not the floor itself. A case-count
-floor is an **authoring** invariant; enforcing it on the **grading** path fails the
-one actor who can't fix it. **Fix direction:** on the grade/intake path, downgrade
-the case-floor (and similar authoring-only invariants) from a hard 400 to a
-**warning** carried in the result — keep grading the code — while keeping the floor
-**hard** for authoring/drafting (`draft_eval`, `authoring.py`) where it belongs. The
-platform half (validate at question *creation*, and flag existing offenders) is
-tracked in `../assessment-platform/STATUS.md` A1/A2.
-
-**Standing lesson (A2 there) — flag early, degrade gracefully when tightening a
-shared invariant.** F4 made `validate_question` stricter and silently invalidated
-already-stored data. When a shared invariant tightens: (1) **flag** existing rows
-that would now fail (a deploy-time check that lists offenders), and (2) **degrade**
-rather than hard-fail on paths where the data owner can't act. Worth writing into
-CONVENTIONS.md when this is picked up — it will recur.
+**Agent half: DONE.** The grade/intake path now downgrades the authoring-shape
+invariants (the `MIN_CORRECTNESS_CASES` correctness floor and the required
+performance case) from a hard 400 to **warnings carried in the result**, and grades
+the code as-is; structural invariants (malformed schema, zero cases, bad
+`pass_threshold`/`time_limit_s`) still hard-fail. The seam is `validate_question(q,
+*, degrade_authoring=False) -> list[str]` (authoring-shape checks split into
+`_authoring_shape_problems`); `question_from_dict` / `load_question` return
+`(Question, list[str])` and the grade callers (`api.py` `/assessments` + `/run/tests`,
+`cli.py` `--question-file`) pass `degrade_authoring=True`. Warnings ride on
+`AssessmentResult.warnings` → `result_to_dict()["warnings"]` (opaque to the callback
+envelope — `contract/callback_contract.py` untouched). The floor stays **hard** for
+`authoring.py` and `draft_eval.py`. Offline tests cover both directions; the standing
+lesson is now CONVENTIONS.md §6. **Platform half still open:** validate at question
+*creation* and flag existing offenders — tracked in `../assessment-platform/STATUS.md`
+A1/A2.
 
 ### Report endpoint for platform PDF download — AR3 (cross-repo)
 `report.py` renders a PDF but is reachable only via CLI/email. The platform stores

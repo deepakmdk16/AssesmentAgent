@@ -11,7 +11,7 @@ verdict.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .adversarial import AdversarialReport, adversarial_to_dict, probe_adversarial
 from .constants import ERROR, FAIL, PASS, PERFORMANCE, SKIPPED_ENGINE, Verdict
@@ -41,6 +41,12 @@ class AssessmentResult:
     # the verdict or score — enforced structurally (the probe runs after the
     # verdict is computed from `execution` alone) and by test_adversarial.py.
     adversarial: AdversarialReport | None = None
+    # Non-gating advisories carried into the stored result. Today these are the
+    # authoring-shape invariants (case-count floor, required performance case) that
+    # the grade/intake path downgraded from a hard 400 rather than reject the
+    # candidate for the interviewer's question shape. Opaque to the callback
+    # envelope (contract/callback_contract.py); the platform stores them verbatim.
+    warnings: list[str] = field(default_factory=list)
 
 
 def _format_execution_summary(execution: ExecutionReport) -> str:
@@ -73,6 +79,7 @@ def assess(
     question: Question = HARDCODED_QUESTION,
     *,
     adversarial: bool = False,
+    warnings: list[str] | None = None,
 ) -> AssessmentResult:
     execution = run_submission(
         source, language, question.test_cases, time_limit_s=question.time_limit_s
@@ -141,6 +148,7 @@ def assess(
         pass_threshold_pct=threshold_pct,
         usage=usage,
         adversarial=adversarial_report,
+        warnings=warnings or [],
     )
 
 
@@ -190,4 +198,7 @@ def result_to_dict(result: AssessmentResult) -> dict:
         "judge_cost_usd": (result.usage.cost_usd if result.usage and result.usage.priced else None),
         # Advisory only — the platform must store/display this as non-gating signal.
         "adversarial": adversarial_to_dict(result.adversarial) if result.adversarial else None,
+        # Non-gating warnings (e.g. an authoring-shape invariant the grade path
+        # downgraded). Opaque to the callback envelope; never affects the verdict.
+        "warnings": result.warnings,
     }

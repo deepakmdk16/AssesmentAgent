@@ -48,9 +48,14 @@ def test_fail_when_too_few_correctness_cases(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
     _patch_draft(
         monkeypatch,
-        DraftResult(engine="e", question={"x": 1}, reference_solution="print(1)", reference_language="python"),
+        DraftResult(
+            engine="e",
+            question={"x": 1},
+            reference_solution="print(1)",
+            reference_language="python",
+        ),
     )
-    monkeypatch.setattr(de, "question_from_dict", lambda d: _question(1, 1))
+    monkeypatch.setattr(de, "question_from_dict", lambda d: (_question(1, 1), []))
     status, detail = de._check(CASE)
     assert status == "FAIL"
     assert "correctness" in detail
@@ -60,9 +65,14 @@ def test_fail_when_no_performance_case(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
     _patch_draft(
         monkeypatch,
-        DraftResult(engine="e", question={"x": 1}, reference_solution="print(1)", reference_language="python"),
+        DraftResult(
+            engine="e",
+            question={"x": 1},
+            reference_solution="print(1)",
+            reference_language="python",
+        ),
     )
-    monkeypatch.setattr(de, "question_from_dict", lambda d: _question(3, 0))
+    monkeypatch.setattr(de, "question_from_dict", lambda d: (_question(3, 0), []))
     status, detail = de._check(CASE)
     assert status == "FAIL"
     assert "performance" in detail
@@ -72,10 +82,17 @@ def test_fail_when_reference_does_not_pass(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
     _patch_draft(
         monkeypatch,
-        DraftResult(engine="e", question={"x": 1}, reference_solution="print(1)", reference_language="python"),
+        DraftResult(
+            engine="e",
+            question={"x": 1},
+            reference_solution="print(1)",
+            reference_language="python",
+        ),
     )
-    monkeypatch.setattr(de, "question_from_dict", lambda d: _question(3, 1))
-    monkeypatch.setattr(de, "assess", lambda *a, **k: SimpleNamespace(verdict="FAIL", score_pct=40.0))
+    monkeypatch.setattr(de, "question_from_dict", lambda d: (_question(3, 1), []))
+    monkeypatch.setattr(
+        de, "assess", lambda *a, **k: SimpleNamespace(verdict="FAIL", score_pct=40.0)
+    )
     status, detail = de._check(CASE)
     assert status == "FAIL"
     assert "reference graded FAIL" in detail
@@ -85,10 +102,17 @@ def test_ok_when_reference_passes(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
     _patch_draft(
         monkeypatch,
-        DraftResult(engine="e", question={"x": 1}, reference_solution="print(1)", reference_language="python"),
+        DraftResult(
+            engine="e",
+            question={"x": 1},
+            reference_solution="print(1)",
+            reference_language="python",
+        ),
     )
-    monkeypatch.setattr(de, "question_from_dict", lambda d: _question(3, 1))
-    monkeypatch.setattr(de, "assess", lambda *a, **k: SimpleNamespace(verdict="PASS", score_pct=100.0))
+    monkeypatch.setattr(de, "question_from_dict", lambda d: (_question(3, 1), []))
+    monkeypatch.setattr(
+        de, "assess", lambda *a, **k: SimpleNamespace(verdict="PASS", score_pct=100.0)
+    )
     status, detail = de._check(CASE)
     assert status == "OK"
     assert "PASS" in detail
@@ -96,5 +120,7 @@ def test_ok_when_reference_passes(monkeypatch):
 
 def test_main_returns_zero_when_all_skipped(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.setattr(de, "draft_question", lambda *a, **k: DraftResult(engine="offline", question=None))
+    monkeypatch.setattr(
+        de, "draft_question", lambda *a, **k: DraftResult(engine="offline", question=None)
+    )
     assert de.main() == 0
