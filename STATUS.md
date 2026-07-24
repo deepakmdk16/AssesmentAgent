@@ -9,40 +9,6 @@ CONVENTIONS.md.
 
 ## Open items
 
-### The F4 case-floor rejects pre-floor questions at grade time — P0 (cross-repo)
-**Agent half: DONE.** The grade/intake path now downgrades the authoring-shape
-invariants (the `MIN_CORRECTNESS_CASES` correctness floor and the required
-performance case) from a hard 400 to **warnings carried in the result**, and grades
-the code as-is; structural invariants (malformed schema, zero cases, bad
-`pass_threshold`/`time_limit_s`) still hard-fail. The seam is `validate_question(q,
-*, degrade_authoring=False) -> list[str]` (authoring-shape checks split into
-`_authoring_shape_problems`); `question_from_dict` / `load_question` return
-`(Question, list[str])` and the grade callers (`api.py` `/assessments` + `/run/tests`,
-`cli.py` `--question-file`) pass `degrade_authoring=True`. Warnings ride on
-`AssessmentResult.warnings` → `result_to_dict()["warnings"]` (opaque to the callback
-envelope — `contract/callback_contract.py` untouched). The floor stays **hard** for
-`authoring.py` and `draft_eval.py`. Offline tests cover both directions; the standing
-lesson is now CONVENTIONS.md §6. **Platform half still open:** validate at question
-*creation* and flag existing offenders — tracked in `../assessment-platform/STATUS.md`
-A1/A2.
-
-### Report endpoint for platform PDF download — AR3 (cross-repo) — AGENT HALF DONE
-`report.py` renders a PDF but was reachable only via CLI/email. **Agent half landed:**
-`POST /report` (api.py) reconstructs the rich `AssessmentResult` via a new
-`result_from_dict` (inverse of `result_to_dict`, in agent.py) and renders it with the
-existing `build_report_pdf`, returning `application/pdf`. Auth/signature-gated like the
-other inbound routes; no rate bucket (no LLM, no code exec).
-**Refined contract (the serialized result is not self-sufficient):** `result_to_dict`
-stores only the question's id/title and omits the candidate `source`, but the report
-renders the question prompt/constraints/example/`required_complexity` **and** the source.
-So `POST /report` takes `{result, question, code, candidate?}` — the platform owns and
-supplies all three; nothing is duplicated into stored results. `usage`/cost isn't stored
-or rendered, so it round-trips as `None` (test asserts every *rendered* field survives).
-**Cross-branch follow-up — DONE (F4 merge):** the report route now threads
-`degrade_authoring=True` through `question_from_dict`, so an already-graded pre-floor
-question renders instead of being re-rejected at render time.
-Platform half (proxy + download button) is in `../assessment-platform/STATUS.md`.
-
 ### Runner sandboxing — landed; prod bring-up remains
 The OS sandbox that closes the fork-bomb / network-egress / JVM-Go-memory gap now
 exists: `sandbox.py` wraps each untrusted child's argv in **nsjail** (fresh network
