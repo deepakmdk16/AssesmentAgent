@@ -31,8 +31,10 @@ def test_fail_when_zero_probed_with_key(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
     _patch(monkeypatch, AdversarialReport(engine="e", probed=0, findings=[], summary="generation failed"))
     status, detail = ae._check(CASE)
-    assert status == "FAIL"
+    # A 0-case run is a distinct failure from a false positive (timeout / bad output).
+    assert status == "EMPTY"
     assert "0 cases" in detail
+    assert "false positive" not in detail
 
 
 def test_fail_on_false_positive_finding(monkeypatch):
@@ -40,7 +42,7 @@ def test_fail_on_false_positive_finding(monkeypatch):
     finding = AdversarialFinding(name="edge", stdin="", rationale="r", kind="crash", detail="boom")
     _patch(monkeypatch, AdversarialReport(engine="e", probed=5, findings=[finding], summary="1 crash"))
     status, detail = ae._check(CASE)
-    assert status == "FAIL"
+    assert status == "FINDING"
     assert "false positive" in detail
 
 
