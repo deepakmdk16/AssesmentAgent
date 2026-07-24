@@ -9,6 +9,39 @@ CONVENTIONS.md.
 
 ## Open items
 
+### The F4 case-floor rejects pre-floor questions at grade time — P0 (cross-repo)
+`MIN_CORRECTNESS_CASES = 4` (F4) is enforced by `validate_question`, which runs on
+**every inline question at grade-time intake** (`loader.py:78` ← `question_from_dict`
+← `api.py:392`, the synchronous 400 guard). So a question authored before the floor
+existed — the platform has `grid_path_minimize` with **3** correctness cases — now
+hard-fails **every candidate submission** with `400 invalid question: … needs at
+least 4 'correctness' cases`. The platform marks the submission `error` and returns
+502; the candidate is punished for the interviewer's question shape (found in manual
+testing 2026-07-24).
+
+The defect is *where* the invariant is checked, not the floor itself. A case-count
+floor is an **authoring** invariant; enforcing it on the **grading** path fails the
+one actor who can't fix it. **Fix direction:** on the grade/intake path, downgrade
+the case-floor (and similar authoring-only invariants) from a hard 400 to a
+**warning** carried in the result — keep grading the code — while keeping the floor
+**hard** for authoring/drafting (`draft_eval`, `authoring.py`) where it belongs. The
+platform half (validate at question *creation*, and flag existing offenders) is
+tracked in `../assessment-platform/STATUS.md` A1/A2.
+
+**Standing lesson (A2 there) — flag early, degrade gracefully when tightening a
+shared invariant.** F4 made `validate_question` stricter and silently invalidated
+already-stored data. When a shared invariant tightens: (1) **flag** existing rows
+that would now fail (a deploy-time check that lists offenders), and (2) **degrade**
+rather than hard-fail on paths where the data owner can't act. Worth writing into
+CONVENTIONS.md when this is picked up — it will recur.
+
+### Report endpoint for platform PDF download — AR3 (cross-repo)
+`report.py` renders a PDF but is reachable only via CLI/email. The platform stores
+the *serialized* result dict, while `build_report_pdf` wants the rich
+`AssessmentResult`. Agent half: add `POST /report` + a `result_from_dict` inverse of
+`result_to_dict` (nested, parity-sensitive), so the platform can proxy + serve it.
+Platform half (proxy + download button) is in `../assessment-platform/STATUS.md`.
+
 ### Runner sandboxing — landed; prod bring-up remains
 The OS sandbox that closes the fork-bomb / network-egress / JVM-Go-memory gap now
 exists: `sandbox.py` wraps each untrusted child's argv in **nsjail** (fresh network
@@ -104,6 +137,11 @@ processes"** (now delivered by nsjail's cgroup controllers above):
   harness confirms drafts stay valid, not that "hard" is harder than "easy".
 - **Candidate-feedback agent (cross-repo, not yet chosen).** Once the platform can
   surface it — actionable feedback to candidates. Spans both repos.
+- **Net-new agent-side ideas (unscheduled).** Per-candidate unique question variants
+  (compounds the executed-oracle moat + anti-cheat), reference generated in the
+  candidate's own language, and difficulty auto-calibration from real pass-rates.
+  Full cross-repo idea list lives in `../assessment-platform/STATUS.md` §D (the old
+  PRODUCT_BACKLOG was consolidated there and deleted, 2026-07-24).
 - **Multiple examples per question (deferred).** `Question`/loader/report hold a
   single example; the authoring vision wants a list. Extend when the authoring UI
   needs it.
