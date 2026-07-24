@@ -13,12 +13,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .adversarial import AdversarialReport, adversarial_to_dict, probe_adversarial
+from .adversarial import (
+    AdversarialFinding,
+    AdversarialReport,
+    adversarial_to_dict,
+    probe_adversarial,
+)
 from .constants import ERROR, FAIL, PASS, PERFORMANCE, SKIPPED_ENGINE, Verdict
-from .judge import QualityAssessment, assess_quality, skipped_assessment
+from .judge import CriterionScore, QualityAssessment, assess_quality, skipped_assessment
 from .pricing import Usage
 from .questions import HARDCODED_QUESTION, Question
-from .runner import ExecutionReport, run_submission
+from .runner import ExecutionReport, TestOutcome, run_submission
 
 
 @dataclass
@@ -202,3 +207,85 @@ def result_to_dict(result: AssessmentResult) -> dict:
         # downgraded). Opaque to the callback envelope; never affects the verdict.
         "warnings": result.warnings,
     }
+
+
+def result_from_dict(data: dict, *, question: Question, source: str) -> AssessmentResult:
+    """Rebuild an AssessmentResult from `result_to_dict`'s output.
+
+    The inverse of `result_to_dict`, so the platform — which persists only the
+    serialized result — can hand it back to the agent to render a PDF (see
+    `POST /report`). The serialized form deliberately omits two things the report
+    needs, both of which the platform already stores and passes in here: the full
+    `question` (the dict keeps only its id/title) and the candidate `source`.
+
+    `usage`/cost is not stored in the dict and is not read by the report, so it is
+    reconstructed as None; the round-trip therefore preserves everything the report
+    renders but not the cost fields (`judge_cost_usd`, `adversarial.cost_usd`). Any
+    keys not needed for rendering (e.g. a future `warnings`) are ignored.
+    """
+    outcomes = [
+        TestOutcome(
+            name=t["name"],
+            stdin=t["input"],
+            expected=t["expected"],
+            actual=t["actual"],
+            passed=(t["status"] == "PASS"),
+            error=t["error"],
+            duration_s=t["duration_s"],
+            timed_out=t["timed_out"],
+            category=t["category"],
+            weight=t["weight"],
+        )
+        for t in data["test_cases"]
+    ]
+    execution = ExecutionReport(
+        language=data["language"],
+        compile_error=data["compile_error"],
+        outcomes=outcomes,
+        infra_error=data["infra_error"],
+    )
+    q = data["quality"]
+    quality = QualityAssessment(
+        criteria=[CriterionScore(**c) for c in q["criteria"]],
+        overall_score=q["overall_score"],
+        time_complexity=q["time_complexity"],
+        meets_time_constraints=q["meets_time_constraints"],
+        strengths=q["strengths"],
+        weaknesses=q["weaknesses"],
+        summary=q["summary"],
+    )
+    adv_data = data.get("adversarial")
+    adversarial = None
+    if adv_data is not None:
+        adversarial = AdversarialReport(
+            engine=adv_data["engine"],
+            probed=adv_data["probed"],
+            findings=[
+                AdversarialFinding(
+                    name=f["name"],
+                    stdin=f["input"],
+                    rationale=f["rationale"],
+                    kind=f["kind"],
+                    detail=f["detail"],
+                )
+                for f in adv_data["findings"]
+            ],
+            summary=adv_data["summary"],
+            usage=None,
+        )
+    return AssessmentResult(
+        question=question,
+        language=data["language"],
+        source=source,
+        execution=execution,
+        quality=quality,
+        quality_engine=q["engine"],
+        verdict=data["verdict"],
+        reason=data["reason"],
+        score_pct=data["score_pct"],
+        points_earned=data["points_earned"],
+        points_total=data["points_total"],
+        pass_threshold_pct=data["pass_threshold_pct"],
+        usage=None,
+        adversarial=adversarial,
+    )

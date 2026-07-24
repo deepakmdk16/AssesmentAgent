@@ -26,11 +26,22 @@ lesson is now CONVENTIONS.md §6. **Platform half still open:** validate at ques
 *creation* and flag existing offenders — tracked in `../assessment-platform/STATUS.md`
 A1/A2.
 
-### Report endpoint for platform PDF download — AR3 (cross-repo)
-`report.py` renders a PDF but is reachable only via CLI/email. The platform stores
-the *serialized* result dict, while `build_report_pdf` wants the rich
-`AssessmentResult`. Agent half: add `POST /report` + a `result_from_dict` inverse of
-`result_to_dict` (nested, parity-sensitive), so the platform can proxy + serve it.
+### Report endpoint for platform PDF download — AR3 (cross-repo) — AGENT HALF DONE
+`report.py` renders a PDF but was reachable only via CLI/email. **Agent half landed:**
+`POST /report` (api.py) reconstructs the rich `AssessmentResult` via a new
+`result_from_dict` (inverse of `result_to_dict`, in agent.py) and renders it with the
+existing `build_report_pdf`, returning `application/pdf`. Auth/signature-gated like the
+other inbound routes; no rate bucket (no LLM, no code exec).
+**Refined contract (the serialized result is not self-sufficient):** `result_to_dict`
+stores only the question's id/title and omits the candidate `source`, but the report
+renders the question prompt/constraints/example/`required_complexity` **and** the source.
+So `POST /report` takes `{result, question, code, candidate?}` — the platform owns and
+supplies all three; nothing is duplicated into stored results. `usage`/cost isn't stored
+or rendered, so it round-trips as `None` (test asserts every *rendered* field survives).
+**Cross-branch follow-up (do at merge time):** the report route calls `question_from_dict`,
+which still hard-enforces the authoring floor, so a pre-floor question would 400 at render
+time. Once the F4 grade-path degrade merges, thread `degrade_authoring=True` through the
+report route so rendering never re-rejects an already-graded question.
 Platform half (proxy + download button) is in `../assessment-platform/STATUS.md`.
 
 ### Runner sandboxing — landed; prod bring-up remains
@@ -219,9 +230,10 @@ code never leaving the machine; **the adversarial probe is flaky — see below.*
   leave it off or point it at Claude until this is understood. Next step is to
   find whether the malformed JSON is specific to this question's schema/size or a
   general structured-output weakness at 30B.
-  Still worth a fix: the harness's failure line reads "drew a finding (false
-  positive)" even when the real cause was a timeout or a parse error with zero
-  findings — it sends you after the wrong thing.
+  **Fixed (2026-07-24):** the harness used to print "drew a finding (false
+  positive)" for *every* failure, even a 0-case generation (a timeout or
+  unparseable output). `_check` now returns distinct `EMPTY` vs `FINDING`
+  statuses and the summary prints the guidance that matches the actual cause.
 
 #### Greedy decoding traps a local model — both generative surfaces
 

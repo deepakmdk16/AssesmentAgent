@@ -50,15 +50,16 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from .agent import assess, result_to_dict
+from .agent import assess, result_from_dict, result_to_dict
 from .authoring import draft_question, draft_to_dict
 from .constants import OFFLINE_ENGINE
 from .languages import LANGUAGES
 from .loader import question_from_dict
 from .ratelimit import client_ip, limiter
+from .report import build_report_pdf
 from .runner import run_once, run_submission
 from .signing import SIGNATURE_HEADER, sign, verify
 
@@ -250,6 +251,23 @@ class DraftRequest(BaseModel):
     )
 
 
+class ReportRequest(BaseModel):
+    result: dict = Field(
+        description="The serialized assessment result (a `result_to_dict` payload, "
+        "as delivered on the grade callback and stored by the platform)."
+    )
+    question: dict = Field(
+        description="The full question the candidate answered (same shape as POST "
+        "/assessments) — the serialized result omits everything but the id/title."
+    )
+    code: str = Field(
+        min_length=1,
+        max_length=_MAX_CODE_CHARS,
+        description="The candidate's submitted source, rendered verbatim in the report.",
+    )
+    candidate: str = Field(default="Candidate", description="Candidate name for the report title.")
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
@@ -290,6 +308,40 @@ def draft(req: DraftRequest) -> dict:
         # Draft ran but produced nothing usable — surface the warnings, don't 200.
         raise HTTPException(status_code=422, detail=payload)
     return payload
+
+
+@app.post(
+    "/report",
+    dependencies=[Depends(_require_token), Depends(_require_signature)],
+)
+def report(req: ReportRequest) -> Response:
+    """Render a stored assessment result to a PDF and return the bytes.
+
+    Stateless, like everything else here: the platform owns storage and supplies
+    the serialized `result` it kept plus the two things that payload omits — the
+    full `question` and the candidate `code`. We reconstruct the rich result and
+    hand it to the same `build_report_pdf` the CLI/email path uses. No LLM, no code
+    execution, so no rate-limit bucket — just the shared-secret + signature gates.
+
+    NOTE (cross-branch): `question_from_dict` here still enforces the authoring
+    invariants, so a pre-floor question would 400 at render time. Once the grade-
+    path degrade lands (agent STATUS "F4"), thread `degrade_authoring=True` through
+    so rendering never re-rejects an already-graded question.
+    """
+    try:
+        question = question_from_dict(req.question)
+        result = result_from_dict(req.result, question=question, source=req.code)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"malformed report payload: {exc}") from exc
+    with tempfile.TemporaryDirectory() as tmp:
+        out = build_report_pdf(result, Path(tmp) / "report.pdf", candidate=req.candidate)
+        pdf_bytes = out.read_bytes()
+    filename = f"{req.candidate}-assessment.pdf".replace(" ", "_")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 def _require_language(language: str) -> None:
