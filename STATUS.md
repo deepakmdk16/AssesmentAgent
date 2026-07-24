@@ -84,6 +84,24 @@ processes"** (now delivered by nsjail's cgroup controllers above):
   `a[i] == 2*a[j]` boundary). A correct candidate still fails on a rule the prompt
   never stated. Also 1/5 still used `queue<>` with only `<stack>` included — it
   builds on libc++ via a transitive include and would fail elsewhere.
+- **Test-case floor landed (F4) — draft-eval RE-RUN DONE (local).** `validate_question`
+  now requires **≥ 4 correctness cases** (`MIN_CORRECTNESS_CASES`, exempts the perf
+  case), matching the draft-eval's `min_correctness_cases`, so both hand-authored
+  and AI-drafted questions must clear it. Offline unit tests updated + green.
+  **Re-baselined 2026-07-23 on `qwen3-coder:30b`: assess-draft-eval 3/3, drafts at
+  7 / 5 / 7 correctness — all above the floor, so it rejects nothing real.** A
+  Sonnet re-run (needs a key) would confirm on that model, but the floor is
+  structural and the local run is strong evidence.
+- **Difficulty now has prompt semantics (T3) — no-regression CONFIRMED (local);
+  differentiation still unmeasured.** `DIFFICULTY: easy|medium|hard` used to be a
+  bare label; `question_draft.md` now has a "Calibrating to the requested difficulty"
+  section tying each level to concrete levers (constraint size → forced complexity,
+  algorithmic depth, edge-case emphasis). **assess-draft-eval re-run 2026-07-23 on
+  `qwen3-coder:30b` with the new prompt active: 3/3, every draft's reference still
+  grades PASS 100% — the difficulty section did not regress drafting.** Still owed
+  (not blocking): new eval cases that draft the *same* brief at easy/medium/hard and
+  assert the constraint sizes / required complexity actually diverge — the current
+  harness confirms drafts stay valid, not that "hard" is harder than "easy".
 - **Candidate-feedback agent (cross-repo, not yet chosen).** Once the platform can
   surface it — actionable feedback to candidates. Spans both repos.
 - **Multiple examples per question (deferred).** `Question`/loader/report hold a

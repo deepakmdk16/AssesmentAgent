@@ -18,6 +18,13 @@ from dataclasses import dataclass
 
 from .constants import CORRECTNESS, PERFORMANCE, Category
 
+# Hard floor on small correctness cases every question must carry (the single
+# large performance case is exempt — it's the TLE gate, not an answer check). One
+# or two cases barely tell a real solution from a lucky one. Matches the
+# draft-eval's `min_correctness_cases` so an AI draft that clears the eval also
+# clears this structural gate (and it holds for hand-authored questions too).
+MIN_CORRECTNESS_CASES = 4
+
 
 @dataclass(frozen=True)
 class TestCase:
@@ -199,6 +206,12 @@ def validate_question(q: Question) -> None:
         raise ValueError(
             f"question {q.id!r}: needs at least one 'performance' test case "
             "(the constraint-sized TLE gate that catches too-slow solutions)"
+        )
+    n_correctness = sum(1 for t in q.test_cases if t.category == CORRECTNESS)
+    if n_correctness < MIN_CORRECTNESS_CASES:
+        raise ValueError(
+            f"question {q.id!r}: needs at least {MIN_CORRECTNESS_CASES} 'correctness' "
+            f"test cases, has {n_correctness} (the performance case is exempt)"
         )
     if not (0.0 < q.pass_threshold <= 1.0):
         raise ValueError(
