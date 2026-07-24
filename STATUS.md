@@ -38,10 +38,9 @@ renders the question prompt/constraints/example/`required_complexity` **and** th
 So `POST /report` takes `{result, question, code, candidate?}` — the platform owns and
 supplies all three; nothing is duplicated into stored results. `usage`/cost isn't stored
 or rendered, so it round-trips as `None` (test asserts every *rendered* field survives).
-**Cross-branch follow-up (do at merge time):** the report route calls `question_from_dict`,
-which still hard-enforces the authoring floor, so a pre-floor question would 400 at render
-time. Once the F4 grade-path degrade merges, thread `degrade_authoring=True` through the
-report route so rendering never re-rejects an already-graded question.
+**Cross-branch follow-up — DONE (F4 merge):** the report route now threads
+`degrade_authoring=True` through `question_from_dict`, so an already-graded pre-floor
+question renders instead of being re-rejected at render time.
 Platform half (proxy + download button) is in `../assessment-platform/STATUS.md`.
 
 ### Runner sandboxing — landed; prod bring-up remains

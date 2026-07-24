@@ -322,14 +322,9 @@ def report(req: ReportRequest) -> Response:
     full `question` and the candidate `code`. We reconstruct the rich result and
     hand it to the same `build_report_pdf` the CLI/email path uses. No LLM, no code
     execution, so no rate-limit bucket — just the shared-secret + signature gates.
-
-    NOTE (cross-branch): `question_from_dict` here still enforces the authoring
-    invariants, so a pre-floor question would 400 at render time. Once the grade-
-    path degrade lands (agent STATUS "F4"), thread `degrade_authoring=True` through
-    so rendering never re-rejects an already-graded question.
     """
     try:
-        question = question_from_dict(req.question)
+        question, _warnings = question_from_dict(req.question, degrade_authoring=True)
         result = result_from_dict(req.result, question=question, source=req.code)
     except (KeyError, TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=f"malformed report payload: {exc}") from exc
