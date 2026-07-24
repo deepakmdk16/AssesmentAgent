@@ -35,11 +35,22 @@ that would now fail (a deploy-time check that lists offenders), and (2) **degrad
 rather than hard-fail on paths where the data owner can't act. Worth writing into
 CONVENTIONS.md when this is picked up — it will recur.
 
-### Report endpoint for platform PDF download — AR3 (cross-repo)
-`report.py` renders a PDF but is reachable only via CLI/email. The platform stores
-the *serialized* result dict, while `build_report_pdf` wants the rich
-`AssessmentResult`. Agent half: add `POST /report` + a `result_from_dict` inverse of
-`result_to_dict` (nested, parity-sensitive), so the platform can proxy + serve it.
+### Report endpoint for platform PDF download — AR3 (cross-repo) — AGENT HALF DONE
+`report.py` renders a PDF but was reachable only via CLI/email. **Agent half landed:**
+`POST /report` (api.py) reconstructs the rich `AssessmentResult` via a new
+`result_from_dict` (inverse of `result_to_dict`, in agent.py) and renders it with the
+existing `build_report_pdf`, returning `application/pdf`. Auth/signature-gated like the
+other inbound routes; no rate bucket (no LLM, no code exec).
+**Refined contract (the serialized result is not self-sufficient):** `result_to_dict`
+stores only the question's id/title and omits the candidate `source`, but the report
+renders the question prompt/constraints/example/`required_complexity` **and** the source.
+So `POST /report` takes `{result, question, code, candidate?}` — the platform owns and
+supplies all three; nothing is duplicated into stored results. `usage`/cost isn't stored
+or rendered, so it round-trips as `None` (test asserts every *rendered* field survives).
+**Cross-branch follow-up (do at merge time):** the report route calls `question_from_dict`,
+which still hard-enforces the authoring floor, so a pre-floor question would 400 at render
+time. Once the F4 grade-path degrade merges, thread `degrade_authoring=True` through the
+report route so rendering never re-rejects an already-graded question.
 Platform half (proxy + download button) is in `../assessment-platform/STATUS.md`.
 
 ### Runner sandboxing — landed; prod bring-up remains
