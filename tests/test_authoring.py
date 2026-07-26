@@ -224,6 +224,104 @@ def test_broken_generator_rejects_question():
     assert any("performance" in w.lower() or "reference" in w.lower() for w in result.warnings)
 
 
+# --- difficulty calibration guard -------------------------------------------
+#
+# `_check_difficulty_calibration` reads the drafted constraints / complexity back
+# and WARNS (never rejects) on a clear mismatch with the requested difficulty.
+# The parsers are unit-tested directly; the guard is exercised through the
+# deterministic `build_from_spec` (no key), asserting on `result.warnings`.
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("1 <= N <= 100000.", 1e5),
+        ("0 ≤ a[i] ≤ 10^9, 1 ≤ n ≤ 10^5", 1e5),  # value bound is excluded
+        ("N up to 2·10^5 elements", 2e5),
+        ("array length up to 1e4", 1e4),
+        ("1 <= N <= 1500", 1500),
+        ("small inputs only", None),  # no count-context magnitude
+        ("values up to 10^18", None),  # a value bound, no size keyword
+    ],
+)
+def test_parse_size_bound(text, expected):
+    assert authoring._parse_size_bound(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("O(1)", 0),
+        ("O(log n)", 1),
+        ("O(N)", 2),
+        ("O(N log N)", 3),
+        ("O(n^2)", 4),
+        ("O(n**2)", 4),
+        ("O(n³)", 5),
+        ("O(2^n)", 6),
+        ("O(n log n + m)", 3),  # dominant term wins
+        (None, None),
+        ("quadratic-ish", None),
+    ],
+)
+def test_complexity_rank(text, expected):
+    assert authoring._complexity_rank(text) == expected
+
+
+def test_difficulty_none_is_silent():
+    result = build_from_spec(_spec(), engine="test")
+    assert result.question is not None
+    assert not any("calibration" in w.lower() for w in result.warnings)
+
+
+def test_well_calibrated_medium_is_silent():
+    result = build_from_spec(
+        _spec(constraints="1 <= N <= 10^5", required_complexity="O(N log N)"),
+        engine="test",
+        difficulty="medium",
+    )
+    assert result.question is not None
+    assert not any("calibration" in w.lower() for w in result.warnings)
+
+
+def test_easy_with_large_constraints_warns():
+    result = build_from_spec(
+        _spec(constraints="1 <= N <= 10^7", required_complexity="O(N)"),
+        engine="test",
+        difficulty="easy",
+    )
+    assert result.question is not None  # advisory only — still ships
+    assert any("'easy'" in w and "N≈1e7" in w for w in result.warnings)
+
+
+def test_medium_with_tiny_constraints_warns():
+    result = build_from_spec(
+        _spec(constraints="1 <= N <= 1500", required_complexity="O(N)"),
+        engine="test",
+        difficulty="medium",
+    )
+    assert any("technique isn't forced" in w for w in result.warnings)
+
+
+def test_easy_with_heavy_complexity_warns():
+    # Small N so the feasibility check stays quiet and we isolate the band warning.
+    result = build_from_spec(
+        _spec(constraints="1 <= N <= 3000", required_complexity="O(n^2)"),
+        engine="test",
+        difficulty="easy",
+    )
+    assert any("O(n^2) or worse" in w for w in result.warnings)
+
+
+def test_infeasible_complexity_at_stated_n_warns():
+    result = build_from_spec(
+        _spec(constraints="1 <= N <= 10^5", required_complexity="O(N^2)"),
+        engine="test",
+        difficulty="medium",
+    )
+    assert any("over the" in w and "ops" in w for w in result.warnings)
+
+
 # --- retry ------------------------------------------------------------------
 #
 # Drafting is stochastic, so an unusable draft is worth asking again for. These

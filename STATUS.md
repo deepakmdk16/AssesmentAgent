@@ -102,15 +102,28 @@ processes"** (now delivered by nsjail's cgroup controllers above):
   (not blocking): new eval cases that draft the *same* brief at easy/medium/hard and
   assert the constraint sizes / required complexity actually diverge — the current
   harness confirms drafts stay valid, not that "hard" is harder than "easy".
-  **Enforce, don't just instruct (raised 2026-07-24):** the difficulty→levers
-  mapping is a *soft prompt* (`question_draft.md` "Calibrating to the requested
-  difficulty"), verified only on local qwen. Difficulty IS wired end to end
-  (platform UI → `agent_client.py:131` → `DIFFICULTY:` hint → the levers, so
-  "medium binary search on the answer, N≤1e5" vs "easy direct binary search" vs
-  "hard rotated-array" is what the prompt *asks* for) — but nothing checks the model
-  obeyed. Add a **deterministic post-draft guard** that reads back the drafted
-  `constraints` / `required_complexity` and warns (or rejects) when they fall outside
-  the requested difficulty band, so calibration is checked, not hoped for.
+  **Enforce, don't just instruct — post-draft guard DONE 2026-07-26.** The
+  difficulty→levers mapping was a *soft prompt* with nothing checking the model
+  obeyed. `authoring._check_difficulty_calibration` now reads the two levers back
+  after a draft validates and **warns** (never rejects — difficulty is a soft
+  signal, so a mislabel must not throw away a valid question the way a broken
+  oracle does) on a clear mismatch with the requested difficulty: `constraints`
+  size outside the tier's band (easy too large / medium+hard too small to force
+  the naive to TLE), `required_complexity` heavier than an easy tier or trivial
+  for medium, and a difficulty-independent **feasibility** cross-check (the
+  claimed complexity at the stated N must clear the time limit, else the
+  reference a candidate matches would itself TLE). It stays silent when a lever
+  can't be parsed and the bands are wide, so false positives are near zero; the
+  two parsers (`_parse_size_bound`, `_complexity_rank`) are the intended
+  **parity check** for multi-question set generation. No prompt change, so the
+  eval baselines are unaffected (a keyed re-run is confirmatory, not required).
+  Still owed (not blocking, unchanged): eval cases that draft the *same* brief at
+  easy/medium/hard and assert the constraint sizes / complexity actually diverge
+  — the guard checks each draft against its own requested tier, not that "hard"
+  ends up harder than "easy". Note the guard is heuristic on free-text
+  `constraints`: it skips sizes < 1e3 (can't tell an upper bound from the `1` in
+  `1 ≤ n`), so a "medium, N≤100" mislabel slips through — the common large-bound
+  miscalibration is what it catches.
 - **Multi-question set generation (cross-repo, enables per-candidate variants).**
   Add an orchestration that drafts **K variants** for one brief + difficulty by
   calling the existing single-question drafter K times (each keeps its executed-oracle
