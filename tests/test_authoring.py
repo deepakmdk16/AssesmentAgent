@@ -548,3 +548,51 @@ def test_draft_unusable_returns_422(client, monkeypatch):
     r = client.post("/questions/draft", json=_body())
     assert r.status_code == 422
     assert "nothing usable" in str(r.json())
+
+
+# --- draft-set endpoint -----------------------------------------------------
+#
+# The endpoint runs the real `draft_question_set`; each variant's `draft_question`
+# is stubbed (patched on `authoring`, where the orchestration resolves it), so the
+# deterministic reference-execution + serialization path is exercised for real.
+
+
+def test_draft_set_unsupported_language(client):
+    r = client.post("/questions/draft-set", json=_body(language="cobol", count=2))
+    assert r.status_code == 400
+
+
+def test_draft_set_offline_returns_503(client):
+    r = client.post("/questions/draft-set", json=_body(count=2))
+    assert r.status_code == 503
+
+
+def test_draft_set_requires_token_when_set(client, monkeypatch):
+    monkeypatch.setenv("ASSESS_API_TOKEN", "secret")
+    r = client.post("/questions/draft-set", json=_body(count=2))
+    assert r.status_code == 401
+
+
+@pytest.mark.parametrize("count", [1, 9])
+def test_draft_set_rejects_out_of_range_count(client, count):
+    r = client.post("/questions/draft-set", json=_body(count=count))
+    assert r.status_code == 422  # pydantic bounds (2..8), before route logic
+
+
+def test_draft_set_success(client, monkeypatch):
+    good = build_from_spec(_spec(), engine="stub")
+    monkeypatch.setattr(authoring, "draft_question", lambda *a, **k: good)
+    r = client.post("/questions/draft-set", json=_body(count=3))
+    assert r.status_code == 200
+    payload = r.json()
+    assert len(payload["variants"]) == 3
+    assert all(v["question"]["id"] == "sum_n" for v in payload["variants"])
+    assert payload["warnings"] == []  # identical siblings -> no shortfall, no drift
+
+
+def test_draft_set_all_unusable_returns_422(client, monkeypatch):
+    bad = DraftResult(engine="stub", question=None, warnings=["nothing usable"])
+    monkeypatch.setattr(authoring, "draft_question", lambda *a, **k: bad)
+    r = client.post("/questions/draft-set", json=_body(count=2))
+    assert r.status_code == 422
+    assert "nothing usable" in str(r.json())

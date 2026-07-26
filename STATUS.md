@@ -134,10 +134,14 @@ processes"** (now delivered by nsjail's cgroup controllers above):
   size bounds ≥10× apart — so no candidate gets an easier variant than another;
   advisory only, silent on unparseable levers, like the calibration guard. Returns
   a `DraftSetResult` (per-variant `DraftResult`s + set-level warnings; a variant
-  shortfall is warned, not fatal). Offline-tested. **Still to do:** (a) expose it
-  over HTTP — a `POST /questions/draft-set` on `assess-api` so the platform can
-  trigger it; (b) the **platform half** (UI to request a K-variant set + storage +
-  assignment of a per-candidate variant), tracked in
+  shortfall is warned, not fatal). **`POST /questions/draft-set` on `assess-api`
+  DONE 2026-07-26** (`count` 2..8, same token/signature/rate-limit guards as
+  `/questions/draft`, shares the `draft` rate bucket): returns every variant +
+  set-level warnings; a partial set (some variants unusable) still 200s so the
+  caller judges whether the usable count suffices, only an all-failed set 422s;
+  offline `ANTHROPIC_API_KEY`-absent path 503s like the single draft.
+  Offline-tested end to end. **Still to do:** the **platform half** — UI to
+  request a K-variant set + storage + per-candidate variant assignment, tracked in
   `../assessment-platform/STATUS.md`. Parity is currently heuristic post-hoc (warn,
   don't regenerate the outlier) — regeneration/backoff of a drifting variant is a
   later refinement if parity warnings prove common.

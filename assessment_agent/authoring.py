@@ -893,3 +893,11 @@ def draft_to_dict(result: DraftResult) -> dict:
         "reference_language": result.reference_language,
         "cost_usd": (result.usage.cost_usd if result.usage and result.usage.priced else None),
     }
+
+
+def draft_set_to_dict(result: DraftSetResult) -> dict:
+    return {
+        "engine": result.engine,
+        "warnings": result.warnings,
+        "variants": [draft_to_dict(v) for v in result.variants],
+    }
