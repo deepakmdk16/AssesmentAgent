@@ -26,7 +26,9 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -60,6 +62,44 @@ _OLLAMA_TEMPERATURE = 0.3
 # on the small correctness inputs, so it also gets headroom rather than the
 # candidate-facing limit — timing it out would silently forfeit the cross-check.
 _BRUTE_FORCE_TIME_LIMIT_S = 15.0
+
+# --- Difficulty calibration guard -------------------------------------------
+# `question_draft.md` ("Calibrating to the requested difficulty") only *asks* the
+# model to match the requested difficulty; nothing checked it obeyed (STATUS: T3
+# "enforce, don't just instruct"). `_check_difficulty_calibration` reads the two
+# levers the prompt names — `constraints` and `required_complexity` — back and
+# WARNS on a clear mismatch. It never rejects: difficulty is a soft signal, so a
+# mislabel must not throw away an otherwise-valid question the way a broken oracle
+# does. It stays silent whenever a field can't be parsed, so an oddly-worded but
+# fine draft is never punished — the bands below are wide on purpose, catching
+# gross miscalibration, not nitpicks. The same two parsers back the multi-question
+# "parity" check (STATUS, cross-repo): equal difficulty ⇒ equal size band and
+# complexity rank across a generated variant set.
+
+# Complexity classes as an ordinal rank (not a cost). Matched as substrings of the
+# normalised `required_complexity`, in this order so a compound like "n log n"
+# resolves to n-log-n (3) before the bare "n" (2), and "log n" to 1 before "n".
+_COMPLEXITY_PATTERNS: tuple[tuple[tuple[str, ...], int], ...] = (
+    (("2^n", "2**n"), 6),
+    (("n^3", "n**3", "n³"), 5),
+    (("n^2", "n**2", "n²"), 4),
+    (("nlogn",), 3),
+    (("logn", "log"), 1),
+    (("n",), 2),
+    (("1",), 0),
+)
+
+# Count-like variables whose bound sets the problem size (as opposed to a value
+# bound like `a[i] <= 10^9`, which says nothing about difficulty).
+_SIZE_KEYWORDS = re.compile(
+    r"\b(n|m|q|k|len|length|size|count|elements?|items?|nodes?|edges?|"
+    r"vertices|rows?|cols?|columns?|cells?|characters?|chars?)\b",
+    re.IGNORECASE,
+)
+
+# Rough operations a ~2s run clears; the feasibility check scales it by the
+# question's actual time limit.
+_FEASIBLE_OPS_PER_2S = 5e8
 
 
 class _DraftInput(BaseModel):
@@ -259,10 +299,16 @@ def _draft_once(
             question=None,
             warnings=[f"Draft generation failed: {exc}"],
         )
-    return build_from_spec(spec, engine=engine, usage=usage)
+    return build_from_spec(spec, engine=engine, difficulty=difficulty, usage=usage)
 
 
-def build_from_spec(spec: DraftSpec, *, engine: str, usage: Usage | None = None) -> DraftResult:
+def build_from_spec(
+    spec: DraftSpec,
+    *,
+    engine: str,
+    difficulty: str | None = None,
+    usage: Usage | None = None,
+) -> DraftResult:
     """Execute the reference solution to fill each case's `expected`, assemble a
     Question, and validate it. Pure and deterministic given the spec — no model
     call — so tests can drive it with a hand-built spec and no API key."""
@@ -349,6 +395,10 @@ def build_from_spec(spec: DraftSpec, *, engine: str, usage: Usage | None = None)
     except Exception as exc:
         warnings.append(f"Drafted question failed validation: {exc}")
         return result
+
+    # The question is valid and will ship; last, note any difficulty mismatch so
+    # the warning only ever attaches to a question that actually shipped.
+    _check_difficulty_calibration(spec, difficulty, warnings)
 
     result.question = question_dict
     return result
@@ -458,6 +508,127 @@ def _build_performance_case(spec: DraftSpec, warnings: list[str]) -> TestCase | 
         warnings.append(f"Reference solution failed on the generated performance input: {reason}")
         return None
     return TestCase("performance_large", perf_stdin, ref.actual, PERFORMANCE, _PERFORMANCE_WEIGHT)
+
+
+def _sci(x: float) -> str:
+    """Compact scientific label for a warning, e.g. 100000 -> '1e5'."""
+    return f"{x:.0e}".replace("e+0", "e").replace("e+", "e").replace("e-0", "e-")
+
+
+def _magnitudes(text: str):
+    """Yield the numeric magnitudes in `text`: `10^k`, `a·10^k`, `1e5`, and plain
+    integers >= 1000 (small bounds like the `1` in `1 <= n` are noise)."""
+    t = text.replace("**", "^").replace(" ", "")
+    for m in re.finditer(r"(?:(\d+(?:\.\d+)?)[*x·×])?10\^(\d+)", t):
+        coef = float(m.group(1)) if m.group(1) else 1.0
+        yield coef * (10 ** int(m.group(2)))
+    for m in re.finditer(r"(\d+(?:\.\d+)?)e(\d+)", t):
+        yield float(m.group(1)) * (10 ** int(m.group(2)))
+    for m in re.finditer(r"\d[\d,_]{3,}", t):
+        yield float(m.group(0).replace(",", "").replace("_", ""))
+
+
+def _parse_size_bound(constraints: str) -> float | None:
+    """The largest problem-size bound stated in `constraints`, or None if none is
+    found. Only magnitudes in a clause that mentions a count-like variable count,
+    so a `values <= 10^9` bound doesn't masquerade as the problem size."""
+    best: float | None = None
+    for clause in re.split(r"[,\n;]|\band\b|\bwith\b|\bwhere\b", constraints):
+        if not _SIZE_KEYWORDS.search(clause):
+            continue
+        for val in _magnitudes(clause):
+            if best is None or val > best:
+                best = val
+    return best
+
+
+def _complexity_rank(text: str | None) -> int | None:
+    """Ordinal rank of a `required_complexity` string (0=O(1) .. 6=O(2^n)), or
+    None if it names no recognised class."""
+    if not text:
+        return None
+    norm = re.sub(r"[\s()·×{}]|big-?o|θ|ω", "", text.lower())
+    norm = norm.replace("**", "^").replace("*", "")
+    for patterns, rank in _COMPLEXITY_PATTERNS:
+        if any(p in norm for p in patterns):
+            return rank
+    return None
+
+
+def _estimate_ops(rank: int, n: float) -> float | None:
+    """Rough operation count for a solution of the given complexity `rank` at
+    size `n`. None where a scalar estimate is meaningless (exponential)."""
+    if rank == 0:
+        return 1.0
+    if rank == 1:
+        return math.log2(n) if n > 1 else 1.0
+    if rank == 2:
+        return n
+    if rank == 3:
+        return n * math.log2(n) if n > 1 else n
+    if rank == 4:
+        return n * n
+    if rank == 5:
+        return n**3
+    return None
+
+
+def _check_difficulty_calibration(
+    spec: DraftSpec, difficulty: str | None, warnings: list[str]
+) -> None:
+    """Advisory: warn (never reject) when the drafted `constraints` /
+    `required_complexity` don't match the *requested* difficulty. Silent when
+    nothing was requested or a lever can't be parsed. See the module-level note."""
+    if difficulty is None:
+        return
+    tier = difficulty.strip().lower()
+    if tier not in ("easy", "medium", "hard"):
+        return
+
+    n = _parse_size_bound(spec.constraints)
+    rank = _complexity_rank(spec.required_complexity)
+
+    # Size band — the prompt's stated N ranges (easy ~1e4, medium/hard force the
+    # naive O(n^2) to TLE). Wide, so only a gross miss fires.
+    if n is not None:
+        if tier == "easy" and n > 2e5:
+            warnings.append(
+                f"Difficulty calibration: 'easy' but the constraints reach N≈{_sci(n)}; "
+                "easy expects modest sizes (a straightforward pass, not a forced technique)."
+            )
+        elif tier in ("medium", "hard") and n < 2e3:
+            warnings.append(
+                f"Difficulty calibration: '{tier}' but the largest size bound is only "
+                f"N≈{_sci(n)}; a naive O(n^2) likely passes, so the technique isn't forced."
+            )
+
+    # Complexity band vs difficulty. 'hard' is deliberately not banded here: the
+    # prompt says a hard problem's insight can *be* an O(n) bound, so a low rank
+    # is not a miscalibration for 'hard'.
+    if rank is not None:
+        if tier == "easy" and rank >= 4:
+            warnings.append(
+                f"Difficulty calibration: 'easy' but required_complexity "
+                f"{spec.required_complexity!r} is O(n^2) or worse."
+            )
+        elif tier == "medium" and rank <= 1:
+            warnings.append(
+                f"Difficulty calibration: 'medium' but required_complexity "
+                f"{spec.required_complexity!r} is trivial (≤ O(log n))."
+            )
+
+    # Feasibility cross-check (difficulty-independent, the most valuable): the
+    # claimed intended complexity must actually clear the time limit at the stated
+    # N, or the reference a candidate must match would itself TLE.
+    if n is not None and rank is not None:
+        ops = _estimate_ops(rank, n)
+        ceiling = _FEASIBLE_OPS_PER_2S * (spec.time_limit_s / 2.0)
+        if ops is not None and ops > ceiling:
+            warnings.append(
+                f"Difficulty calibration: required_complexity {spec.required_complexity!r} "
+                f"at N≈{_sci(n)} is ~{_sci(ops)} ops, likely over the "
+                f"{spec.time_limit_s:g}s limit."
+            )
 
 
 def _to_loader_dict(spec: DraftSpec, cases: list[TestCase], example: tuple[str, str]) -> dict:
