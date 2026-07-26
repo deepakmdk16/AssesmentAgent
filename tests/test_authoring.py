@@ -322,6 +322,104 @@ def test_infeasible_complexity_at_stated_n_warns():
     assert any("over the" in w and "ops" in w for w in result.warnings)
 
 
+# --- multi-question set generation ------------------------------------------
+#
+# `draft_question_set` drafts K sibling variants (K independent `draft_question`
+# calls at a pinned difficulty) and `_check_set_parity` flags drift across them.
+# The parity helper is pure; the orchestration is driven with a fake
+# `draft_question` (no key, no model call).
+
+
+def _q(constraints="1 <= N <= 10^5", required_complexity="O(N)") -> dict:
+    return {"constraints": constraints, "required_complexity": required_complexity}
+
+
+def test_parity_silent_for_matched_set():
+    warnings: list[str] = []
+    authoring._check_set_parity([_q(), _q()], warnings)
+    assert warnings == []
+
+
+def test_parity_needs_two_variants():
+    warnings: list[str] = []
+    authoring._check_set_parity([_q(required_complexity="O(N^2)")], warnings)
+    assert warnings == []
+
+
+def test_parity_flags_complexity_mismatch():
+    warnings: list[str] = []
+    authoring._check_set_parity([_q(), _q(required_complexity="O(N^2)")], warnings)
+    assert any("differ in required_complexity" in w for w in warnings)
+
+
+def test_parity_flags_size_mismatch():
+    warnings: list[str] = []
+    authoring._check_set_parity(
+        [_q(constraints="1 <= N <= 10^4"), _q(constraints="1 <= N <= 10^6")], warnings
+    )
+    assert any("differ in constraint size" in w for w in warnings)
+
+
+def test_parity_silent_when_levers_unparsable():
+    warnings: list[str] = []
+    authoring._check_set_parity(
+        [_q(constraints="small", required_complexity="fast") for _ in range(2)], warnings
+    )
+    assert warnings == []
+
+
+def _fake_draft(monkeypatch, results: list[DraftResult]):
+    """Make `draft_question` yield `results` in order and record the kwargs it
+    was called with."""
+    calls: list[dict] = []
+
+    def _fake(brief, *, language, difficulty=None, target_complexity=None):
+        calls.append({"difficulty": difficulty, "target_complexity": target_complexity})
+        return results[len(calls) - 1]
+
+    monkeypatch.setattr(authoring, "draft_question", _fake)
+    return calls
+
+
+def test_draft_set_calls_k_times_with_pinned_difficulty(monkeypatch):
+    results = [DraftResult(engine="test", question=_q()) for _ in range(3)]
+    calls = _fake_draft(monkeypatch, results)
+    out = authoring.draft_question_set(
+        "brief", language="python", count=3, difficulty="medium", target_complexity="O(n)"
+    )
+    assert len(calls) == 3
+    assert all(c == {"difficulty": "medium", "target_complexity": "O(n)"} for c in calls)
+    assert len(out.questions) == 3
+    assert out.warnings == []
+
+
+def test_draft_set_reports_shortfall(monkeypatch):
+    results = [
+        DraftResult(engine="test", question=_q()),
+        DraftResult(engine="test", question=None, warnings=["reference didn't compile"]),
+        DraftResult(engine="test", question=_q()),
+    ]
+    _fake_draft(monkeypatch, results)
+    out = authoring.draft_question_set("brief", language="python", count=3)
+    assert len(out.questions) == 2
+    assert any("Only 2 of 3 variants" in w for w in out.warnings)
+
+
+def test_draft_set_aggregates_parity_warning(monkeypatch):
+    results = [
+        DraftResult(engine="test", question=_q(required_complexity="O(N)")),
+        DraftResult(engine="test", question=_q(required_complexity="O(N^2)")),
+    ]
+    _fake_draft(monkeypatch, results)
+    out = authoring.draft_question_set("brief", language="python", count=2)
+    assert any("differ in required_complexity" in w for w in out.warnings)
+
+
+def test_draft_set_count_must_be_positive():
+    with pytest.raises(ValueError):
+        authoring.draft_question_set("brief", language="python", count=0)
+
+
 # --- retry ------------------------------------------------------------------
 #
 # Drafting is stochastic, so an unusable draft is worth asking again for. These

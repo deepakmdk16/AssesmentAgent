@@ -185,6 +185,23 @@ class DraftResult:
     usage: Usage | None = None
 
 
+@dataclass
+class DraftSetResult:
+    """A set of K sibling variants drafted from one brief at a pinned difficulty
+    (see `draft_question_set`). Each variant is an independent `DraftResult` —
+    same executed-oracle guarantee as a single draft — and `warnings` holds the
+    *set-level* notes (variant shortfall + parity across the siblings)."""
+
+    engine: str
+    variants: list[DraftResult] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def questions(self) -> list[dict]:
+        """The loader-shaped dicts of the variants that drafted successfully."""
+        return [v.question for v in self.variants if v.question is not None]
+
+
 @dataclass(frozen=True)
 class DraftConfig:
     # Shares the judge's model/thinking/effort env so all three LLM calls track
@@ -276,6 +293,52 @@ def draft_question(
     if attempts > 1:
         result.warnings.insert(0, f"Gave up after {attempts} drafting attempts.")
     return result
+
+
+def draft_question_set(
+    brief: str,
+    *,
+    language: str,
+    count: int,
+    difficulty: str | None = None,
+    target_complexity: str | None = None,
+) -> DraftSetResult:
+    """Draft `count` sibling variants of one brief, then check parity across them.
+
+    Each variant is a separate `draft_question` call at the **same** difficulty +
+    target_complexity — deliberately K independent drafts, **not** one prompt
+    asked for K questions (which dilutes each and wrecks quality parity). Every
+    variant keeps its own executed-oracle guarantee. Feeds per-candidate unique
+    variants: hand each candidate a different sibling of the same brief.
+
+    Set-level `warnings` flag a variant shortfall (fewer than `count` usable) and
+    any parity drift across the siblings (see `_check_set_parity`). Variants that
+    failed to draft are kept in `variants` (with their own warnings) but excluded
+    from `questions`.
+    """
+    if count < 1:
+        raise ValueError("count must be >= 1")
+
+    variants = [
+        draft_question(
+            brief,
+            language=language,
+            difficulty=difficulty,
+            target_complexity=target_complexity,
+        )
+        for _ in range(count)
+    ]
+
+    warnings: list[str] = []
+    usable = [v.question for v in variants if v.question is not None]
+    if len(usable) < count:
+        warnings.append(
+            f"Only {len(usable)} of {count} variants drafted successfully; "
+            "a smaller set still works but offers fewer per-candidate variants."
+        )
+    _check_set_parity(usable, warnings)
+
+    return DraftSetResult(engine=variants[0].engine, variants=variants, warnings=warnings)
 
 
 def _draft_once(
@@ -629,6 +692,38 @@ def _check_difficulty_calibration(
                 f"at N≈{_sci(n)} is ~{_sci(ops)} ops, likely over the "
                 f"{spec.time_limit_s:g}s limit."
             )
+
+
+def _check_set_parity(questions: list[dict], warnings: list[str]) -> None:
+    """Advisory parity check across a variant set: siblings meant to be
+    interchangeable per candidate must sit in the same difficulty band, or one
+    candidate gets an easier question than another. Reuses the calibration
+    parsers on each variant's `constraints` / `required_complexity`, and — like
+    the calibration guard — only WARNS, and stays silent on any lever it can't
+    parse. Needs at least two comparable variants to say anything."""
+    if len(questions) < 2:
+        return
+
+    ranks = [_complexity_rank(q.get("required_complexity")) for q in questions]
+    known_ranks = [r for r in ranks if r is not None]
+    if len(set(known_ranks)) > 1:
+        seen = ", ".join(
+            str(q.get("required_complexity"))
+            for q, r in zip(questions, ranks, strict=True)
+            if r is not None
+        )
+        warnings.append(
+            f"Set parity: variants differ in required_complexity ({seen}); "
+            "one candidate would get a harder variant than another."
+        )
+
+    sizes = [_parse_size_bound(q.get("constraints", "")) for q in questions]
+    known_sizes = [s for s in sizes if s is not None]
+    if known_sizes and max(known_sizes) >= 10 * min(known_sizes):
+        warnings.append(
+            f"Set parity: variants differ in constraint size by ≥10x "
+            f"(N≈{_sci(min(known_sizes))} .. {_sci(max(known_sizes))})."
+        )
 
 
 def _to_loader_dict(spec: DraftSpec, cases: list[TestCase], example: tuple[str, str]) -> dict:
