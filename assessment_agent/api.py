@@ -54,7 +54,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Re
 from pydantic import BaseModel, Field
 
 from .agent import assess, result_from_dict, result_to_dict
-from .authoring import draft_question, draft_to_dict
+from .authoring import draft_question, draft_question_set, draft_set_to_dict, draft_to_dict
 from .constants import OFFLINE_ENGINE
 from .languages import LANGUAGES
 from .loader import question_from_dict
@@ -187,6 +187,10 @@ _MAX_STDIN_CHARS = 2_000_000
 # Ceiling on an authoring brief. This one becomes an LLM prompt, so the cap is
 # about cost as much as memory.
 _MAX_BRIEF_CHARS = 20_000
+# A variant set costs one full draft per variant, so bound how many a single call
+# can request. Small sets (2-5) are the intended use — enough to hand different
+# candidates different siblings without a runaway bill.
+_MAX_SET_COUNT = 8
 
 
 class AssessmentRequest(BaseModel):
@@ -251,6 +255,14 @@ class DraftRequest(BaseModel):
     )
 
 
+class DraftSetRequest(DraftRequest):
+    count: int = Field(
+        ge=2,
+        le=_MAX_SET_COUNT,
+        description=f"How many sibling variants to draft (2..{_MAX_SET_COUNT}).",
+    )
+
+
 class ReportRequest(BaseModel):
     result: dict = Field(
         description="The serialized assessment result (a `result_to_dict` payload, "
@@ -306,6 +318,46 @@ def draft(req: DraftRequest) -> dict:
     payload = draft_to_dict(result)
     if result.question is None:
         # Draft ran but produced nothing usable — surface the warnings, don't 200.
+        raise HTTPException(status_code=422, detail=payload)
+    return payload
+
+
+@app.post(
+    "/questions/draft-set",
+    dependencies=[
+        Depends(_require_token),
+        Depends(_require_signature),
+        Depends(_rate_limit("draft")),
+    ],
+)
+def draft_set(req: DraftSetRequest) -> dict:
+    """Draft a **set** of `count` sibling variants of one brief at a pinned
+    difficulty, for per-candidate unique variants. Each variant is an independent,
+    executed-oracle draft (see `draft_question_set`); the response carries every
+    variant plus set-level warnings (a variant shortfall and any parity drift
+    across siblings). A partial set (some variants unusable) still returns 200 —
+    the caller decides whether the usable count is enough; only a set with *no*
+    usable variant is a 422."""
+    if req.language not in LANGUAGES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unsupported language {req.language!r}; expected one of {sorted(LANGUAGES)}.",
+        )
+    result = draft_question_set(
+        req.brief,
+        language=req.language,
+        count=req.count,
+        difficulty=req.difficulty,
+        target_complexity=req.target_complexity,
+    )
+    if result.engine == OFFLINE_ENGINE:
+        raise HTTPException(
+            status_code=503,
+            detail="drafting requires a live model (set ANTHROPIC_API_KEY on the worker).",
+        )
+    payload = draft_set_to_dict(result)
+    if not result.questions:
+        # Every variant failed — surface the per-variant warnings, don't 200.
         raise HTTPException(status_code=422, detail=payload)
     return payload
 

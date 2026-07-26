@@ -124,14 +124,27 @@ processes"** (now delivered by nsjail's cgroup controllers above):
   `constraints`: it skips sizes < 1e3 (can't tell an upper bound from the `1` in
   `1 ≤ n`), so a "medium, N≤100" mislabel slips through — the common large-bound
   miscalibration is what it catches.
-- **Multi-question set generation (cross-repo, enables per-candidate variants).**
-  Add an orchestration that drafts **K variants** for one brief + difficulty by
-  calling the existing single-question drafter K times (each keeps its executed-oracle
-  guarantee) — **not** one prompt asking for K questions, which dilutes each and
-  wrecks quality parity. Pin `difficulty` + `target_complexity` across the set and
-  reuse the difficulty guard above as a **parity check** so no variant is harder than
-  its siblings. Platform half (UI + orchestration trigger) tracked in
-  `../assessment-platform/STATUS.md`.
+- **Multi-question set generation (cross-repo) — agent orchestration DONE
+  2026-07-26; API endpoint + platform half remain.** `authoring.draft_question_set`
+  drafts **K variants** for one brief by calling `draft_question` K times at the
+  **same** pinned `difficulty` + `target_complexity` (K independent, executed-oracle
+  drafts — **not** one prompt asking for K questions, which dilutes each and wrecks
+  parity). `_check_set_parity` reuses the calibration parsers (`_parse_size_bound`,
+  `_complexity_rank`) to warn when siblings drift — differing complexity rank, or
+  size bounds ≥10× apart — so no candidate gets an easier variant than another;
+  advisory only, silent on unparseable levers, like the calibration guard. Returns
+  a `DraftSetResult` (per-variant `DraftResult`s + set-level warnings; a variant
+  shortfall is warned, not fatal). **`POST /questions/draft-set` on `assess-api`
+  DONE 2026-07-26** (`count` 2..8, same token/signature/rate-limit guards as
+  `/questions/draft`, shares the `draft` rate bucket): returns every variant +
+  set-level warnings; a partial set (some variants unusable) still 200s so the
+  caller judges whether the usable count suffices, only an all-failed set 422s;
+  offline `ANTHROPIC_API_KEY`-absent path 503s like the single draft.
+  Offline-tested end to end. **Still to do:** the **platform half** — UI to
+  request a K-variant set + storage + per-candidate variant assignment, tracked in
+  `../assessment-platform/STATUS.md`. Parity is currently heuristic post-hoc (warn,
+  don't regenerate the outlier) — regeneration/backoff of a drifting variant is a
+  later refinement if parity warnings prove common.
 - **Candidate-feedback agent (cross-repo, not yet chosen).** Once the platform can
   surface it — actionable feedback to candidates. Spans both repos.
 - **Net-new agent-side ideas (unscheduled).** Per-candidate unique question variants
