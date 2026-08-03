@@ -93,15 +93,25 @@ processes"** (now delivered by nsjail's cgroup controllers above):
   Sonnet re-run (needs a key) would confirm on that model, but the floor is
   structural and the local run is strong evidence.
 - **Difficulty now has prompt semantics (T3) — no-regression CONFIRMED (local);
-  differentiation still unmeasured.** `DIFFICULTY: easy|medium|hard` used to be a
-  bare label; `question_draft.md` now has a "Calibrating to the requested difficulty"
-  section tying each level to concrete levers (constraint size → forced complexity,
-  algorithmic depth, edge-case emphasis). **assess-draft-eval re-run 2026-07-23 on
-  `qwen3-coder:30b` with the new prompt active: 3/3, every draft's reference still
-  grades PASS 100% — the difficulty section did not regress drafting.** Still owed
-  (not blocking): new eval cases that draft the *same* brief at easy/medium/hard and
-  assert the constraint sizes / required complexity actually diverge — the current
-  harness confirms drafts stay valid, not that "hard" is harder than "easy".
+  differentiation now measured (DONE 2026-08-03).** `DIFFICULTY: easy|medium|hard`
+  used to be a bare label; `question_draft.md` now has a "Calibrating to the
+  requested difficulty" section tying each level to concrete levers (constraint
+  size → forced complexity, algorithmic depth, edge-case emphasis).
+  **assess-draft-eval re-run 2026-07-23 on `qwen3-coder:30b` with the new prompt
+  active: 3/3, every draft's reference still grades PASS 100% — the difficulty
+  section did not regress drafting.** The once-owed differentiation eval now
+  exists: `DIFFERENTIATION_CASES` (`pair_sum_tiers`) drafts the *same* brief at
+  easy/medium/hard — deliberately pinning no `target_complexity`, so difficulty
+  alone must move the levers — and `_differentiation_verdict` requires a strict
+  easy→hard separation (complexity rank rises, size bound rises ≥10× — the
+  parity guard's own drift threshold — or hard states a big bound where easy
+  states none parseable). A size bound that *shrinks* as tiers rise fails as
+  inverted; a falling complexity rank alone does not (a hard problem's insight
+  can BE a low bound, per the calibration guard), it just isn't separation.
+  Verdict logic is pure and offline-unit-tested (10 tests, incl. the harness
+  half through the real parsers); live it passed 2/2 this session on
+  `qwen3-coder:30b` (size bound rose N≈1e3→1e5). Keyed Sonnet baseline still
+  owed at the next checkpoint-#4 run.
   **Enforce, don't just instruct — post-draft guard DONE 2026-07-26.** The
   difficulty→levers mapping was a *soft prompt* with nothing checking the model
   obeyed. `authoring._check_difficulty_calibration` now reads the two levers back
@@ -117,10 +127,9 @@ processes"** (now delivered by nsjail's cgroup controllers above):
   two parsers (`_parse_size_bound`, `_complexity_rank`) are the intended
   **parity check** for multi-question set generation. No prompt change, so the
   eval baselines are unaffected (a keyed re-run is confirmatory, not required).
-  Still owed (not blocking, unchanged): eval cases that draft the *same* brief at
-  easy/medium/hard and assert the constraint sizes / complexity actually diverge
-  — the guard checks each draft against its own requested tier, not that "hard"
-  ends up harder than "easy". Note the guard is heuristic on free-text
+  The differentiation eval this paragraph used to owe landed 2026-08-03 — see
+  the T3 entry above (`DIFFERENTIATION_CASES` in the draft eval).
+  Note the guard is heuristic on free-text
   `constraints`: it skips sizes < 1e3 (can't tell an upper bound from the `1` in
   `1 ≤ n`), so a "medium, N≤100" mislabel slips through — the common large-bound
   miscalibration is what it catches.
@@ -210,6 +219,17 @@ code never leaving the machine; **the adversarial probe is flaky — see below.*
   category checklist, and `min_correctness_cases` moved 3 -> 4 so the harness
   actually holds the line. Drafting also needed the decoding fix below before it
   was reliable on non-trivial briefs.
+  **2026-08-03: count_islands flaked in both runs of a re-baseline session**
+  (a 2-attempt timeout at the 120 s default, then `Unterminated string (char
+  2113)` with a 300 s budget — so not a timeout problem), while two_sum,
+  reverse_words, and the new `pair_sum_tiers` differentiation case passed both
+  runs (differentiation OK: size bound rose N≈1e3→1e5). The grid-shaped stdin
+  is drafting's analog of the adversarial probe's `knapsack` trap (many
+  similar-looking lines → the repetitive-structure decoding cliff below), and
+  this is the same malformed-JSON signature as the probe's `knapsack_good`
+  flake — evidence the local structured-output weakness is surface-general,
+  not adversarial-specific. Treat local count_islands as flaky, same standing
+  as the probe: investigate together.
 - **Adversarial — FLAKY: 2/2 once, then 1/2 twice. Do not treat as green.**
   `strong` passes every time; `knapsack_good` is the unstable one. The decoding
   fix below cured the *hang* (it no longer runs to the token ceiling), but the
@@ -222,7 +242,9 @@ code never leaving the machine; **the adversarial probe is flaky — see below.*
   and advisory (a failure never touches a verdict), so a local deployment should
   leave it off or point it at Claude until this is understood. Next step is to
   find whether the malformed JSON is specific to this question's schema/size or a
-  general structured-output weakness at 30B.
+  general structured-output weakness at 30B. (2026-08-03 evidence points at
+  *general*: drafting's count_islands anchor now flakes with the same
+  unterminated-JSON signature — see the drafting baseline note below.)
   **Fixed (2026-07-24):** the harness used to print "drew a finding (false
   positive)" for *every* failure, even a 0-case generation (a timeout or
   unparseable output). `_check` now returns distinct `EMPTY` vs `FINDING`
