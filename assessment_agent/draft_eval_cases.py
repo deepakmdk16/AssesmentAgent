@@ -29,6 +29,42 @@ class DraftEvalCase:
     note: str = ""
 
 
+@dataclass(frozen=True)
+class DifferentiationCase:
+    """One brief drafted at several difficulty tiers (T3 differentiation).
+
+    Deliberately pins NO `target_complexity`: the whole point is that the
+    requested difficulty alone must move the drafted levers (`constraints` size
+    bound, `required_complexity`), and pinning a complexity would hold the main
+    lever still. The per-draft calibration guard checks each draft against its
+    own tier; this case checks the tiers against EACH OTHER — that "hard"
+    actually comes out harder than "easy".
+    """
+
+    id: str
+    brief: str
+    language: str
+    tiers: tuple[str, ...] = ("easy", "medium", "hard")
+    note: str = ""
+
+
+DIFFERENTIATION_CASES: tuple[DifferentiationCase, ...] = (
+    DifferentiationCase(
+        id="pair_sum_tiers",
+        brief=(
+            "Given an array of integers and a target value, count the pairs of "
+            "indices i < j whose values sum to the target."
+        ),
+        language="python",
+        note=(
+            "scales cleanly across tiers: small-N naive counting is a fine easy "
+            "draft, while a hard draft should force large N and a hashmap/sort "
+            "approach — clear room for the levers to diverge"
+        ),
+    ),
+)
+
+
 DRAFT_EVAL_CASES: tuple[DraftEvalCase, ...] = (
     DraftEvalCase(
         id="two_sum",
