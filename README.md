@@ -301,10 +301,13 @@ Two further boundaries worth knowing:
 
 ## License
 
-PolyForm Noncommercial 1.0.0 — see [LICENSE](LICENSE).
+Dual-licensed. Copyright (c) 2026 deepak madire.
 
-You may use, study, modify, extend and redistribute this software for any
-noncommercial purpose, free of charge. Any commercial use — including selling
-it, offering it as a service, or using it inside a business — requires a
-separate paid commercial license from the copyright holder. Open a GitHub
-issue on this repository to request one.
+- **Open source: [GNU AGPL-3.0](LICENSE).** Free to use, study, modify,
+  extend and redistribute. If you distribute a modified version, or offer
+  the software (or a derivative) to others over a network, you must release
+  your complete source under the same license.
+- **Commercial license.** If you want to monetize this software without
+  releasing your own source, or need enterprise terms (warranty, support,
+  no copyleft), a paid commercial license is available from the copyright
+  holder. Open a GitHub issue on this repository to request one.
