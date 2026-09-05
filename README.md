@@ -301,4 +301,10 @@ Two further boundaries worth knowing:
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+PolyForm Noncommercial 1.0.0 — see [LICENSE](LICENSE).
+
+You may use, study, modify, extend and redistribute this software for any
+noncommercial purpose, free of charge. Any commercial use — including selling
+it, offering it as a service, or using it inside a business — requires a
+separate paid commercial license from the copyright holder. Open a GitHub
+issue on this repository to request one.
