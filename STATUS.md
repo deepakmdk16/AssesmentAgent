@@ -49,20 +49,23 @@ processes"** (now delivered by nsjail's cgroup controllers above):
 
 ## Other pending work
 
-- **Local-LLM provider (landed + baselined; the probe is not yet dependable).**
-  `llm.py` selects `ASSESS_LLM_PROVIDER` (anthropic default / ollama local via
-  `ollama_chat`). **Judge, authoring, and adversarial** all route through it,
-  verified live on `qwen3-coder:30b`: judge — strong O(n)→4.5, buggy O(n²)→1.5
-  with complexity flagged; authoring — a Kadane brief drafted into a valid
-  question whose own executed reference validates (warnings=[]); adversarial —
-  probed 8 cases on correct code with 0 findings (no false positives). All $0,
-  schema-valid, with offline routing/degradation unit tests per surface. **Qwen
-  now has its own eval baseline** (see the reference section below): judge 7/7 at
-  $0 and drafting 3/3 are solid locally; **the adversarial probe is flaky on Qwen
-  and must not be relied on** (details below). Both eval harnesses used to gate
-  `SKIP` on `ANTHROPIC_API_KEY` directly, which hid that failure as a skip; they
-  now gate on `provider()`, so a configured-but-failing local backend reports
-  FAIL.
+- **Local-LLM provider (landed + baselined; the flake root-caused + fixed
+  2026-08-03).** `llm.py` selects `ASSESS_LLM_PROVIDER` (anthropic default /
+  ollama local via `ollama_chat`). **Judge, authoring, and adversarial** all
+  route through it, verified live on `qwen3-coder:30b`: judge — strong O(n)→4.5,
+  buggy O(n²)→1.5 with complexity flagged; authoring — a Kadane brief drafted
+  into a valid question whose own executed reference validates (warnings=[]);
+  adversarial — probed 8 cases on correct code with 0 findings (no false
+  positives). All $0, schema-valid, with offline routing/degradation unit tests
+  per surface. **Qwen now has its own eval baseline** (see the reference section
+  below): judge 7/7 at $0, drafting 4/4, adversarial 2/2×3 consecutive runs —
+  the malformed-JSON flake on the probe and on grid-shaped drafting was
+  root-caused (a repetition loop inside a JSON string field, general to both
+  generative surfaces) and is now recovered by an escalated in-call retry in
+  `ollama_chat` (details in the greedy-decoding section below). Both eval
+  harnesses used to gate `SKIP` on `ANTHROPIC_API_KEY` directly, which hid that
+  failure as a skip; they now gate on `provider()`, so a configured-but-failing
+  local backend reports FAIL.
 - **Authoring: drafted references are now cross-checked (landed; one gap left).**
   A drafted `reference_solution` is the oracle — every `expected` comes from
   executing it — so a reference that is *wrong but deterministic* used to pass
@@ -200,12 +203,14 @@ Re-run all three after any model/prompt change. **Offline they SKIP, so a green
   report ZERO findings (a finding on correct code = a false positive). **2/2:**
   strong + knapsack_good each probed 8, no crash/timeout.
 
-### Local model — `qwen3-coder:30b`, 2026-07-21
+### Local model — `qwen3-coder:30b`, 2026-07-21 (flake fixed 2026-08-03)
 
 Its own baseline, not a substitute for the one above: with no `ANTHROPIC_API_KEY`
 the provider auto-selects Ollama, so these are what `assess-*-eval` report on a
-keyless machine. **Judge and drafting pass locally**, at $0 and with candidate
-code never leaving the machine; **the adversarial probe is flaky — see below.**
+keyless machine. **All three surfaces now pass locally**, at $0 and with
+candidate code never leaving the machine; the structured-output flake that made
+the probe (and one drafting anchor) unreliable is root-caused and fixed — see
+the greedy-decoding section below.
 
 - **Judge — 7/7 verdicts, 7/7 complexity, 7/7 meets-constraints, $0.** Matches
   Sonnet on every anchor including both deterministic ones (strong→PASS,
@@ -219,32 +224,31 @@ code never leaving the machine; **the adversarial probe is flaky — see below.*
   category checklist, and `min_correctness_cases` moved 3 -> 4 so the harness
   actually holds the line. Drafting also needed the decoding fix below before it
   was reliable on non-trivial briefs.
-  **2026-08-03: count_islands flaked in both runs of a re-baseline session**
-  (a 2-attempt timeout at the 120 s default, then `Unterminated string (char
-  2113)` with a 300 s budget — so not a timeout problem), while two_sum,
-  reverse_words, and the new `pair_sum_tiers` differentiation case passed both
-  runs (differentiation OK: size bound rose N≈1e3→1e5). The grid-shaped stdin
-  is drafting's analog of the adversarial probe's `knapsack` trap (many
-  similar-looking lines → the repetitive-structure decoding cliff below), and
-  this is the same malformed-JSON signature as the probe's `knapsack_good`
-  flake — evidence the local structured-output weakness is surface-general,
-  not adversarial-specific. Treat local count_islands as flaky, same standing
-  as the probe: investigate together.
-- **Adversarial — FLAKY: 2/2 once, then 1/2 twice. Do not treat as green.**
-  `strong` passes every time; `knapsack_good` is the unstable one. The decoding
-  fix below cured the *hang* (it no longer runs to the token ceiling), but the
-  local model still intermittently emits malformed JSON for this anchor — once as
-  a timeout at the 120 s default, once as `Unterminated string (char 1427)` with a
-  300 s budget, so it is **not** a timeout problem. Temperature 0.3 escapes the
-  repetition loop at the cost of genuine run-to-run variance, and this surface
-  sits close enough to the edge that the variance shows.
-  **Consequence: the probe is not yet dependable on a local model.** It is opt-in
-  and advisory (a failure never touches a verdict), so a local deployment should
-  leave it off or point it at Claude until this is understood. Next step is to
-  find whether the malformed JSON is specific to this question's schema/size or a
-  general structured-output weakness at 30B. (2026-08-03 evidence points at
-  *general*: drafting's count_islands anchor now flakes with the same
-  unterminated-JSON signature — see the drafting baseline note below.)
+  **2026-08-03: the count_islands flake is root-caused and fixed.** It had
+  flaked in both runs of a re-baseline session (a 2-attempt timeout at the
+  120 s default, then `Unterminated string (char 2113)` with a 300 s budget) —
+  confirmed by direct repro to be the same repetition loop as the probe's
+  `knapsack_good` flake (surface-general, not adversarial-specific; the model
+  loops emitting a grid literal `0101…` inside the `stdin` string field, or
+  deliberately starts a forbidden 1000×1000 "max_size" grid, until cut off).
+  Fixed by the escalated in-call retry in `ollama_chat` (see below). Post-fix:
+  `assess-draft-eval` **4/4** (count_islands 8 corr + 1 perf, reference PASS
+  100%; differentiation size bound rose N≈1e3→1e5) at the default timeout.
+- **Adversarial — FIXED 2026-08-03: 2/2 in three consecutive runs at the
+  default 120 s timeout.** Was flaky (2/2 once, then 1/2 twice): `strong`
+  passed every time, `knapsack_good` intermittently emitted malformed JSON —
+  once as a timeout at the 120 s default, once as `Unterminated string` with a
+  300 s budget. Direct repro (16 baseline calls) put the per-call flake at
+  ~40-50% for this anchor and pinned the cause: at temperature 0.3 the model
+  still falls into a repetition loop (`1 1000\n` / `1 1` repeated ×50-80)
+  inside the `stdin` string field — where Ollama's grammar-constrained
+  decoding can't reach — runs to the 8192-token ceiling (~140 s, so it's the
+  *same* event behind both the timeout face and the unterminated-JSON face),
+  and gets cut off mid-string. The answer to "schema-specific or general?" is
+  **general**: drafting's count_islands anchor failed with the identical
+  signature. Fixed in `ollama_chat` (see the greedy-decoding section below).
+  The probe remains opt-in and advisory, but no longer needs to be left off on
+  a local deployment.
   **Fixed (2026-07-24):** the harness used to print "drew a finding (false
   positive)" for *every* failure, even a 0-case generation (a timeout or
   unparseable output). `_check` now returns distinct `EMPTY` vs `FINDING`
@@ -286,7 +290,8 @@ Three changes, all verified end to end:
    Note the platform's `AGENT_DRAFT_TIMEOUT_S` must exceed
    `ASSESS_LLM_TIMEOUT_S * ASSESS_DRAFT_ATTEMPTS`, or it aborts a draft that is
    still working — that mismatch surfaced as a bogus 502 "couldn't reach the
-   drafting service".
+   drafting service". **2026-08-03: the multiplier doubled** — with the in-call
+   retry below, one `ollama_chat` call is worst-case ~2× `ASSESS_LLM_TIMEOUT_S`.
 
 **Retries are worthless without sampling variation.** `_DRAFT_ATTEMPTS` exists
 because "drafting is stochastic… asking again tends to produce a working draft."
@@ -294,3 +299,22 @@ That is true of Claude and **false at temperature 0**: the retry reproduced a
 byte-identical failure at the same character offset, so two attempts only doubled
 the wait. Any future retry/backoff logic on a local path must change *something*
 between attempts.
+
+**2026-08-03 — temperature 0.3 was necessary but not sufficient; the fix is an
+escalated in-call retry.** Even at 0.3 the loop recurred on ~40-50% of
+`knapsack_good` probe calls and ~15-25% of count_islands drafts (repro over
+16 baseline calls per surface); the grammar-constrained `format` can't help
+because the loop lives *inside* a string field, and the truncated reply
+surfaced as either a client timeout (120 s default) or a baffling
+`Unterminated string` JSON error (larger budget) — the same event wearing two
+faces, plus a rarer third (a ~2 k-char reply with no `done_reason` at all).
+`ollama_chat` now treats any incomplete reply (`done_reason` != "stop", or a
+client timeout) as retryable ONCE, at temperature +0.3 **with
+`repeat_penalty` 1.15 over a `repeat_last_n` 256 window** — the penalty taxes
+exactly the just-repeated tokens a loop is made of, and it is what actually
+breaks the attractor: measured recovery 7/7 failures vs 2/4 for a hotter
+retry alone. The happy path is byte-identical to the baselined config (no
+penalty on the first call), a doubly-incomplete call raises a diagnosis
+naming the loop and both knobs instead of a JSON parse error, and both
+attempts' tokens count toward usage. Verified live at the default timeout:
+`assess-adversarial-eval` 2/2 × 3 consecutive runs, `assess-draft-eval` 4/4.

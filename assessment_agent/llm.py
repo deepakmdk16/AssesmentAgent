@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.error
 import urllib.request
 
 # Ceiling on a single Claude call. Generous enough for a `max`-effort run with
@@ -69,7 +70,7 @@ _DEFAULT_OLLAMA_MODEL = "qwen3-coder:30b"
 # repetition loop — observed live: asked for a small knapsack input, the model
 # emitted "1 1000\n" forever, never closed the JSON, and hung until the request
 # timed out 17 minutes later. A cap turns that unbounded hang into a truncated
-# reply, which fails to parse and degrades to an advisory failure in seconds.
+# reply (done_reason "length"), which ollama_chat detects and retries hotter.
 # Comfortably above a real reply (a full judge/draft response is ~1-3k tokens).
 _DEFAULT_OLLAMA_MAX_TOKENS = 8192
 
@@ -117,6 +118,43 @@ def _ollama_url() -> str:
     return host.rstrip("/")
 
 
+# The single escalated retry after an incomplete reply. Sampling MUST differ
+# between attempts — at an unchanged temperature a retry reproduces the same
+# loop (observed byte-identical at temperature 0), so it would only double the
+# wait — and a temperature bump alone is not enough: measured on
+# `qwen3-coder:30b`, plain +0.3 recovered only 2 of 4 truncations, while adding
+# a repeat penalty (which taxes exactly the recently-repeated tokens a loop is
+# made of, over a window longer than the loop unit) recovered 7 of 7. The
+# grammar still owns JSON syntax, so the penalty can only steer content.
+_OLLAMA_RETRY_TEMP_BUMP = 0.3
+_OLLAMA_RETRY_OPTIONS = {"repeat_penalty": 1.15, "repeat_last_n": 256}
+
+
+def _is_timeout(exc: Exception) -> bool:
+    """True for a client-timeout failure, whether it surfaces as a raw
+    ``TimeoutError`` or wrapped in ``urllib.error.URLError(reason=timeout)``."""
+    return isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError)
+
+
+def _ollama_chat_once(body: dict, temperature: float) -> tuple[str, int, int, str | None]:
+    """One request to /api/chat; returns (text, in_tokens, out_tokens, done_reason)."""
+    body["options"]["temperature"] = temperature
+    req = urllib.request.Request(
+        f"{_ollama_url()}/api/chat",
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=client_timeout_s()) as resp:
+        payload = json.loads(resp.read().decode())
+    return (
+        payload.get("message", {}).get("content") or "",
+        int(payload.get("prompt_eval_count", 0) or 0),
+        int(payload.get("eval_count", 0) or 0),
+        payload.get("done_reason"),
+    )
+
+
 def ollama_chat(
     *,
     model: str,
@@ -141,8 +179,23 @@ def ollama_chat(
     When ``json_schema`` is given it is passed as Ollama's structured-output
     ``format`` so the reply matches the schema the Claude path requests — the
     caller still validates, because a local model honours a schema less
-    reliably. Raises on transport/HTTP/decode error; callers treat a judge
-    failure as non-fatal and fall back to a failed (never a passing) report.
+    reliably. Note the grammar constrains JSON *syntax* only: inside a free-text
+    string field (a ``stdin`` blob, a program) the model can still fall into a
+    repetition loop, run to the ``num_predict`` ceiling, and get cut off
+    mid-string — the text is then unparseable by construction. Measured on
+    `qwen3-coder:30b` this hits ~15-50% of calls on repetitive-input questions
+    (grids, knapsack lines) even at temperature 0.3, wearing one of three
+    faces: ``done_reason: "length"`` (ran into the ceiling), a truncated reply
+    with no ``done_reason`` at all (observed live), or a client timeout when
+    ``ASSESS_LLM_TIMEOUT_S`` is shorter than the run to the ceiling. So an
+    incomplete reply is never returned: all three cases are retried ONCE,
+    hotter (+0.3) and with a repeat penalty — sampling must differ or the loop
+    just replays, and the penalty is what actually breaks the attractor (it
+    recovered 7/7 observed failures vs 2/4 for temperature alone). A second
+    incomplete reply raises with the real cause named instead of surfacing as
+    a baffling JSON parse error. Raises on transport/HTTP/decode error;
+    callers treat a judge failure as non-fatal and fall back to a failed
+    (never a passing) report.
     """
     body: dict = {
         "model": model,
@@ -151,25 +204,40 @@ def ollama_chat(
             {"role": "user", "content": user},
         ],
         "stream": False,
-        "options": {"temperature": temperature, "num_predict": ollama_max_tokens()},
+        "options": {"num_predict": ollama_max_tokens()},
     }
     if json_schema is not None:
         body["format"] = json_schema
 
-    req = urllib.request.Request(
-        f"{_ollama_url()}/api/chat",
-        data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=client_timeout_s()) as resp:
-        payload = json.loads(resp.read().decode())
+    text, in_tokens, out_tokens = "", 0, 0
+    failure: str | None
+    try:
+        text, in_tokens, out_tokens, done = _ollama_chat_once(body, temperature)
+        failure = None if done == "stop" else f"done_reason={done!r}"
+    except (TimeoutError, urllib.error.URLError) as exc:
+        if not _is_timeout(exc):
+            raise
+        failure = "client timeout"
 
-    text = payload.get("message", {}).get("content") or ""
+    if failure is not None:
+        retry_temp = round(temperature + _OLLAMA_RETRY_TEMP_BUMP, 2)
+        body["options"].update(_OLLAMA_RETRY_OPTIONS)
+        diagnosis = (
+            f"Ollama reply incomplete twice ({failure} at temperature {temperature}, "
+            f"then {{second}} at {retry_temp}, model={model}) — a repetition loop "
+            "inside a string field is running into the num_predict ceiling "
+            "(ASSESS_OLLAMA_MAX_TOKENS) or the client timeout (ASSESS_LLM_TIMEOUT_S)"
+        )
+        try:
+            text, in2, out2, done2 = _ollama_chat_once(body, retry_temp)
+        except (TimeoutError, urllib.error.URLError) as exc:
+            if not _is_timeout(exc):
+                raise
+            raise RuntimeError(diagnosis.format(second="client timeout")) from exc
+        in_tokens += in2
+        out_tokens += out2
+        if done2 != "stop":
+            raise RuntimeError(diagnosis.format(second=f"done_reason={done2!r}"))
     if not text.strip():
         raise RuntimeError(f"Ollama returned no content (model={model})")
-    return (
-        text,
-        int(payload.get("prompt_eval_count", 0) or 0),
-        int(payload.get("eval_count", 0) or 0),
-    )
+    return (text, in_tokens, out_tokens)
