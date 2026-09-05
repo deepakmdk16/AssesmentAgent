@@ -298,3 +298,7 @@ Two further boundaries worth knowing:
   grade.
 - **The answer key is scoped.** `/run/tests` returns pass/fail only; the full
   per-case input/expected/actual is on the graded path, which is authenticated.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
