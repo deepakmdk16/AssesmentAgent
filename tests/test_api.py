@@ -320,3 +320,10 @@ def test_email_without_credentials_reports_error_but_still_assesses(client, monk
     assert result["verdict"] == "PASS"  # assessment still succeeds
     assert result["email"]["emailed"] is False
     assert result["email"]["error"]  # a clear reason (missing SMTP creds)
+
+
+def test_docs_are_not_served(client):
+    # An internal code-execution worker doesn't advertise its route surface
+    # (STATUS A32): the interactive docs and the OpenAPI document are off.
+    for path in ("/docs", "/redoc", "/openapi.json"):
+        assert client.get(path).status_code == 404, path

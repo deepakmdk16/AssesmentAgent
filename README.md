@@ -205,7 +205,10 @@ both questions (`max_subarray_sum`, `knapsack_01`) via each case's
 `uv run assess-api` starts the HTTP worker ([api.py](assessment_agent/api.py)) —
 the second way a question + submission reach the agent. It is **stateless**: the
 platform owns question storage and posts the question *inline*; the agent keeps
-nothing but transient run-state.
+nothing but transient run-state. It binds `ASSESS_API_HOST:ASSESS_API_PORT`
+(default `127.0.0.1:8000` for a dev box; the Dockerfile sets `0.0.0.0` so
+`-p 8000:8000` works). It is an internal worker, so no `/docs` or OpenAPI
+document is served — the table below is the contract.
 
 | Endpoint | Purpose |
 |---|---|

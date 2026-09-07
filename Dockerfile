@@ -69,5 +69,11 @@ RUN uv sync --frozen --no-dev
 # than silently executing untrusted code unsandboxed (see sandbox.py).
 ENV ASSESS_SANDBOX=nsjail
 
+# Bind on all interfaces. The app's default is 127.0.0.1 — right for a bare
+# `uv run assess-api` on a dev box, but inside a container it is unreachable
+# through `-p 8000:8000` (the documented run command silently failed without
+# this). Override ASSESS_API_HOST/ASSESS_API_PORT at `docker run` if needed.
+ENV ASSESS_API_HOST=0.0.0.0
+
 EXPOSE 8000
 CMD ["uv", "run", "assess-api"]

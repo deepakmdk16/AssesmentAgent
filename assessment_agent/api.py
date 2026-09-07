@@ -69,6 +69,12 @@ app = FastAPI(
     title="Assessment Agent",
     description="Stateless intake worker: grade a candidate submission against a supplied question.",
     version="0.2.0",
+    # This is an internal code-execution worker, not a public API: don't
+    # advertise its route surface. The platform is the only intended caller and
+    # already knows the contract (README documents it for humans).
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 
 # Shared-secret auth (see also the platform's callback auth). Bearer tokens in the

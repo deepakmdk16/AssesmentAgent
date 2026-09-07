@@ -54,9 +54,9 @@ module that isn't mentioned fails the gate. Keep the one-liners short; depth
 belongs in the module docstring.
 
 **Deterministic core** (never hand any of this to the model):
-- `runner.py` — executes submissions per language. Cases run serially; per-child
-  rlimits go on via `preexec_fn`, so do **not** wrap it in threads (see its
-  docstring).
+- `runner.py` — executes submissions per language. Cases run serially and whole
+  submissions are serialised process-wide (`_EXEC_LOCK`); per-child rlimits go
+  on via `preexec_fn`, so do **not** wrap it in threads (see its docstring).
 - `sandbox.py` — wraps each untrusted child's argv in an OS sandbox (nsjail:
   no network, dropped caps, cgroup memory+pids) selected by `ASSESS_SANDBOX`;
   a no-op passthrough where none is configured (macOS/dev/CI). The real

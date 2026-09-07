@@ -199,42 +199,18 @@ the tag "single-audit claim". Priorities: **P0** blocks taking money or endanger
 customers · **P1** first paying customers hit it · **P2** fix before scale · **P3** polish.
 Effort: XS minutes · S self-contained · M multi-file · L data + API + UI.
 
-Agent-repo items only (33: P0: 1, P1: 8, P2: 14, P3: 10). Cross-repo and platform items
+Agent-repo items only (30: P0: 0, P1: 6, P2: 14, P3: 10). Cross-repo and platform items
 (the organisation/billing/privacy/deploy epics, and the grading-durability epic that
 spans both repos) live in `../assessment-platform/STATUS.md` §E.
 
-**Suggested sequence.** (1) the cheap P0/P1 correctness + deploy blockers (P01, P02, P04,
-A01, A03, P09, P19, A32, W01, W02); (2) the grading-durability epic as one change
+**Suggested sequence** (the cheap P0/P1 blockers — P01, P02, P04, A01, A03, P09, P19,
+A32, W01, W02 — landed 2026-09-07): (1) the grading-durability epic as one change
 (A04 + P05 + P10 + P15: platform-owned job table, id minted before trigger, background
-reaper with auto-retry); (3) accounts → organisation → billing (P13 → X01 → X02);
-(4) privacy (X03, X04) and email/notifications (X06, X07); (5) deploy + ops (X05, X08,
-A06, A07, P26, X11); (6) everything else by priority. Close each item by deleting it
+reaper with auto-retry); (2) accounts → organisation → billing (P13 → X01 → X02);
+(3) privacy (X03, X04) and email/notifications (X06, X07); (4) deploy + ops (X05, X08,
+A06, A07, P26, X11); (5) everything else by priority. Close each item by deleting it
 here in the same commit (checkpoint #5).
 
-- **A03 · P0 · S — Concurrent grading jobs are not serialised; preexec_fn forked
-from a multithreaded parent.**
-  Evidence: api.py:516 `background.add_task(_run_job, …)` (sync → anyio threadpool);
-  sync /run api.py:402-473 and /run/tests run there too; runner.py:9-15 states
-  serial execution is required (TLE timing + preexec_fn deadlock); runner.py:262
-  uses preexec_fn on the passthrough path; grep Semaphore|Lock( in api.py/runner.py:
-  none. Why: perf-case TLE becomes load-dependent (false FAIL); on non-nsjail
-  deploys a grade can hang forever. Fix: process-wide execution lock/semaphore
-  around run_submission (or single worker thread + queue); bound concurrent /run;
-  document per-instance throughput.
-  Verifier note: refuter confirmed: Confirmed. api.py:516 add_task(_run_job) and
-  sync def /run (402) and /run/tests (429) all dispatch via Starlette
-  run_in_threadpool (background.py:23); no Lock/Semaphore in api.py/runner.py or
-  platform.
-  _Verified: cited lines read in this audit; 2 independent refuter(s) confirmed;
-  source: trace,saas,quality._
-- **A01 · P1 · XS — Container as documented is unreachable (uvicorn binds
-127.0.0.1).**
-  Evidence: assessment_agent/api.py:676 host default "127.0.0.1"; Dockerfile:12
-  documents `docker run -p 8000:8000`; live probe: default CMD unreachable after 45
-  s (listener 0100007F:1F40), with ASSESS_API_HOST=0.0.0.0 reachable in 9 s. Why:
-  first production deploy fails. Fix: `ENV ASSESS_API_HOST=0.0.0.0` in Dockerfile +
-  document the variable.
-  _Verified: live run in this audit; source: trace,saas,live._
 - **A02 · P1 · S — Auto-Ollama provider default breaks a keyless worker and
 contradicts the docs.**
   Evidence: assessment_agent/llm.py:78-93 returns "ollama" whenever
@@ -315,13 +291,6 @@ no CPU cgroup.**
   exists but is permanently red. Fix: set the repo secret (or make the job
   skip-with-notice); run the owed Sonnet baselines and record them.
   _Verified: live run in this audit; source: live._
-- **A32 · P1 · XS — /docs and /openapi.json are public on the code-execution
-worker.**
-  Evidence: no docs_url=None / openapi_url=None in assessment_agent/api.py (FastAPI
-  default on). Why: the full route surface of an internal code-execution service is
-  discoverable. Fix: disable docs on the agent (keep the platform's behind auth or
-  as a published spec).
-  _Verified: cited lines read in this audit; source: saas._
 - **A08 · P2 · XS — Dockerfile production hygiene.**
   Evidence: no HEALTHCHECK (/health exists); base debian:bookworm-slim by tag not
   digest; apt packages unpinned (Dockerfile:38,43-53); uv + nsjail are pinned. Why:
