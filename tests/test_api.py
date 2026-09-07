@@ -1,6 +1,8 @@
 import json
+import logging
 from pathlib import Path
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -19,6 +21,17 @@ def _offline(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ASSESS_API_TOKEN", raising=False)
     monkeypatch.delenv("CALLBACK_TOKEN", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_job_state():
+    # Both registries are process-global; a caller-minted job_id from one test
+    # must not look "in flight" to the next.
+    api._JOBS.clear()
+    api._PENDING_CALLBACKS.clear()
+    yield
+    api._JOBS.clear()
+    api._PENDING_CALLBACKS.clear()
 
 
 @pytest.fixture
@@ -327,3 +340,133 @@ def test_docs_are_not_served(client):
     # (STATUS A32): the interactive docs and the OpenAPI document are off.
     for path in ("/docs", "/redoc", "/openapi.json"):
         assert client.get(path).status_code == 404, path
+
+
+# --------------------------------------------------------------------------- #
+# Grading durability (STATUS A04): caller-minted job ids + honest shutdown        #
+# --------------------------------------------------------------------------- #
+
+
+def test_caller_minted_job_id_is_echoed_in_the_202_and_the_callback(client, monkeypatch):
+    sent: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        api, "_post_callback", lambda job_id, url, payload, **kw: sent.append((url, payload))
+    )
+    resp = client.post(
+        "/assessments", json=_job(job_id="sub-42", callback_url="https://platform/cb")
+    )
+    assert resp.status_code == 202
+    assert resp.json()["job_id"] == "sub-42"
+    assert client.get("/assessments/sub-42").json()["status"] == "done"
+    assert sent[0][1]["job_id"] == "sub-42"
+    assert api._PENDING_CALLBACKS == {}  # delivered, so nothing left to flush
+
+
+def test_repeated_job_id_while_in_flight_is_acknowledged_not_regraded(client, monkeypatch):
+    runs: list[int] = []
+    real_assess = api.assess
+    monkeypatch.setattr(api, "assess", lambda *a, **k: (runs.append(1), real_assess(*a, **k))[1])
+    # "Still in flight": recorded as accepted, as create_assessment does before
+    # the background task runs (TestClient would otherwise finish it inline).
+    api._record_job("sub-7", {"status": "accepted", "result": None, "error": None})
+
+    resp = client.post("/assessments", json=_job(job_id="sub-7"))
+    assert resp.status_code == 202
+    assert resp.json() == {"job_id": "sub-7", "status": "accepted"}
+    assert runs == []  # not graded a second time
+    assert client.get("/assessments/sub-7").json()["status"] == "accepted"
+
+
+def test_repeated_job_id_after_completion_is_regraded(client, monkeypatch):
+    # The platform only re-sends a finished job when it never heard back (or an
+    # interviewer asked for a fresh grade): a real re-run, not a stale answer.
+    assert client.post("/assessments", json=_job(job_id="sub-8")).status_code == 202
+    assert client.get("/assessments/sub-8").json()["status"] == "done"
+    runs: list[int] = []
+    real_assess = api.assess
+    monkeypatch.setattr(api, "assess", lambda *a, **k: (runs.append(1), real_assess(*a, **k))[1])
+    assert client.post("/assessments", json=_job(job_id="sub-8")).status_code == 202
+    assert runs == [1]
+
+
+@pytest.mark.parametrize("bad", ["", "has space", "x" * 65, "semi;colon"])
+def test_malformed_job_id_is_422(client, bad):
+    assert client.post("/assessments", json=_job(job_id=bad)).status_code == 422
+
+
+def test_shutdown_flush_error_callbacks_only_jobs_still_running(monkeypatch):
+    posted: list[tuple[str, str, dict, dict]] = []
+    monkeypatch.setattr(
+        api,
+        "_post_callback",
+        lambda job_id, url, payload, **kw: posted.append((job_id, url, payload, kw)),
+    )
+    api._PENDING_CALLBACKS["j1"] = "https://platform/cb"
+    api._PENDING_CALLBACKS["j2"] = "https://platform/cb"
+
+    assert api._flush_pending_callbacks() == 2
+    assert api._PENDING_CALLBACKS == {}
+    assert sorted(p[0] for p in posted) == ["j1", "j2"]
+    job_id, url, payload, kw = posted[0]
+    assert url == "https://platform/cb"
+    # The worker's ordinary error envelope: no verdict, so the platform re-queues.
+    assert payload == {
+        "job_id": job_id,
+        "status": "error",
+        "error": "agent worker shut down before the job completed",
+    }
+    # One shot with a short timeout: the process is about to be killed.
+    assert kw == {"attempts": 1, "timeout": api._SHUTDOWN_CALLBACK_TIMEOUT_S}
+    assert api._flush_pending_callbacks() == 0  # nothing left
+
+
+def test_completed_job_is_not_flushed(client, monkeypatch):
+    monkeypatch.setattr(api, "_post_callback", lambda *a, **k: None)
+    client.post("/assessments", json=_job(callback_url="https://platform/cb"))  # completes inline
+    assert api._flush_pending_callbacks() == 0
+
+
+def test_post_callback_honours_a_one_shot_budget(monkeypatch, caplog):
+    calls: list[float] = []
+
+    def _post(url, content, headers, timeout):  # noqa: ANN001
+        calls.append(timeout)
+        raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr(api.httpx, "post", _post)
+    monkeypatch.setattr(api, "_CALLBACK_BACKOFF_S", 0.0)
+    with caplog.at_level(logging.WARNING, logger="assessment_agent.api"):
+        api._post_callback("j", "https://platform/cb", {"job_id": "j"}, attempts=1, timeout=2.0)
+    assert calls == [2.0]  # no retries, the given timeout
+    # Giving up on the one-shot budget is routine (the platform's reaper follows
+    # up), so it must not raise the "result is lost" alarm the normal path does.
+    assert [r.levelname for r in caplog.records] == ["WARNING"]
+    assert "reaper will re-trigger" in caplog.records[0].getMessage()
+
+
+def test_accept_registers_the_pending_callback_until_the_job_delivers(client, monkeypatch):
+    # Keep the job "in flight": the background task is a no-op, so nothing pops
+    # the registration. This is the only entry point into the shutdown flush.
+    monkeypatch.setattr(api, "_run_job", lambda *a, **k: None)
+    posted: list[str] = []
+    monkeypatch.setattr(
+        api, "_post_callback", lambda job_id, url, payload, **kw: posted.append(job_id)
+    )
+    resp = client.post(
+        "/assessments", json=_job(job_id="sub-9", callback_url="https://platform/cb")
+    )
+    assert resp.status_code == 202
+    assert api._PENDING_CALLBACKS == {"sub-9": "https://platform/cb"}
+    assert api._flush_pending_callbacks() == 1
+    assert posted == ["sub-9"]
+
+
+def test_lifespan_shutdown_flushes_pending_callbacks(monkeypatch):
+    posted: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        api, "_post_callback", lambda job_id, url, payload, **kw: posted.append((job_id, kw))
+    )
+    with TestClient(app):  # runs startup/shutdown, unlike the bare fixture
+        api._PENDING_CALLBACKS["j"] = "https://platform/cb"
+        assert posted == []  # nothing until shutdown
+    assert posted == [("j", {"attempts": 1, "timeout": api._SHUTDOWN_CALLBACK_TIMEOUT_S})]

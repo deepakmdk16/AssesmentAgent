@@ -199,17 +199,16 @@ the tag "single-audit claim". Priorities: **P0** blocks taking money or endanger
 customers · **P1** first paying customers hit it · **P2** fix before scale · **P3** polish.
 Effort: XS minutes · S self-contained · M multi-file · L data + API + UI.
 
-Agent-repo items only (30: P0: 0, P1: 6, P2: 14, P3: 10). Cross-repo and platform items
-(the organisation/billing/privacy/deploy epics, and the grading-durability epic that
-spans both repos) live in `../assessment-platform/STATUS.md` §E.
+Agent-repo items only (29: P0: 0, P1: 5, P2: 14, P3: 10). Cross-repo and platform items
+(the organisation/billing/privacy/deploy epics) live in
+`../assessment-platform/STATUS.md` §E.
 
 **Suggested sequence** (the cheap P0/P1 blockers — P01, P02, P04, A01, A03, P09, P19,
-A32, W01, W02 — landed 2026-09-07): (1) the grading-durability epic as one change
-(A04 + P05 + P10 + P15: platform-owned job table, id minted before trigger, background
-reaper with auto-retry); (2) accounts → organisation → billing (P13 → X01 → X02);
-(3) privacy (X03, X04) and email/notifications (X06, X07); (4) deploy + ops (X05, X08,
-A06, A07, P26, X11); (5) everything else by priority. Close each item by deleting it
-here in the same commit (checkpoint #5).
+A32, W01, W02 — and the grading-durability epic — A04 + P05 + P10 + P15 — landed
+2026-09-07): (1) accounts → organisation → billing (P13 → X01 → X02); (2) privacy
+(X03, X04) and email/notifications (X06, X07); (3) deploy + ops (X05, X08, A06, A07,
+P26, X11); (4) everything else by priority. Close each item by deleting it here in
+the same commit (checkpoint #5).
 
 - **A02 · P1 · S — Auto-Ollama provider default breaks a keyless worker and
 contradicts the docs.**
@@ -227,20 +226,6 @@ contradicts the docs.**
   → FAILED_ENGINE. api.py:313-321 raises 503 only for OFFLINE_ENGINE, so t.
   _Verified: cited lines read in this audit; 2 independent refuter(s) confirmed;
   source: trace,live._
-- **A04 · P1 (was P0) · M — In-flight jobs are lost on restart; replicas cannot see
-each other's jobs.**
-  Evidence: api.py:170-176 in-memory `_JOBS` OrderedDict; 202 returned before work
-  runs (api.py:516); no persistence; crash between 202 and _post_callback
-  (api.py:572-573) sends nothing; GET /assessments/{id} 404s on another replica
-  (api.py:528-530); ratelimit.py:5-6 per-process. Why: at-most-once grading: a
-  candidate's submission silently vanishes on deploy/OOM. Fix: platform owns a
-  durable jobs table and re-triggers unacknowledged submissions after a deadline
-  (pairs with P05/P10/P15); agent emits an error callback on shutdown.
-  Verifier note: one refuter argued P2 because the platform persists the submission
-  before the 202 and _reap_stale_running heals it after 15 min; kept P1 because that
-  healing needs a manual interviewer retry (see P10).
-  _Verified: cited lines read in this audit; 2 independent refuter(s) confirmed;
-  source: trace,saas._
 - **A05 · P1 · M — POST /questions/draft-set is synchronous and unbounded in time.**
   Evidence: api.py:333-362 runs draft_question_set inline; each variant up to
   _DRAFT_ATTEMPTS=2 calls × (2× ASSESS_LLM_TIMEOUT_S with the in-call retry);

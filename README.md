@@ -212,7 +212,7 @@ document is served — the table below is the contract.
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /assessments` | Grade a submission. `202 {job_id}`; runs in the background, result delivered to `callback_url` and/or `email_to`. |
+| `POST /assessments` | Grade a submission. `202 {job_id}`; runs in the background, result delivered to `callback_url` and/or `email_to`. The caller may mint `job_id` (the platform sends its submission id); a repeat for a job still in flight is acknowledged, not graded twice, so a trigger whose 202 was lost is safe to retry. |
 | `GET /assessments/{job_id}` | Polling fallback. Returns the full result — including the answer key — so it is authenticated. |
 | `POST /run` | Candidate's "Run" button: execute once against their own stdin. No grading, no LLM. |
 | `POST /run/tests` | Candidate's rehearsal: pass/fail per case **only** — never the input/expected/actual. |
@@ -246,6 +246,15 @@ the platform repo — the two sides must agree byte for byte.
 The callback is the only *durable* delivery path (the job map is in-memory,
 bounded, and dies with the process), so it retries with backoff and logs loudly
 when it finally gives up.
+
+**Shutdown is honest, not durable.** Durability lives in the platform, which owns
+the job record and re-triggers anything it never hears back about. The worker's
+part: on SIGTERM it waits `ASSESS_SHUTDOWN_GRACE_S` (default 5 s) for in-flight
+grades, then POSTs an error callback for each one still running — one attempt,
+`ASSESS_SHUTDOWN_CALLBACK_TIMEOUT_S` (2 s) each, in parallel — so the platform
+re-queues them now instead of after its stale-job timeout. Keep the orchestrator's
+stop grace above grace + flush (Docker's default 10 s is fine). A hard kill
+(SIGKILL/OOM) sends nothing; the platform's reaper covers that case.
 
 ### Adversarial probes (advisory)
 

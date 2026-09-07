@@ -29,11 +29,14 @@ See [README.md](README.md) for the full flow, and
   file stem).
 - Run the intake API: `uv run assess-api` (FastAPI). It's a **stateless async
   worker**: `POST /assessments` with the full question **inline** plus the code —
-  `{question:{...}, code, language, candidate?, callback_url?, email_to?}` — gets
-  a `202 {job_id}`; the work runs in the background and the full result is POSTed
-  to `callback_url` and/or emailed. Poll `GET /assessments/{job_id}` as a
-  fallback; `GET /health`. No question storage lives here — the platform owns it
-  and sends it inline.
+  `{question:{...}, code, language, candidate?, callback_url?, email_to?, job_id?}`
+  — gets a `202 {job_id}`; the work runs in the background and the full result is
+  POSTed to `callback_url` and/or emailed. `job_id` is the caller's (the platform
+  mints it); a repeat for a job still in flight is acknowledged, not re-run. Poll
+  `GET /assessments/{job_id}` as a fallback; `GET /health`. No question storage
+  lives here — the platform owns it and sends it inline. Durability is the
+  platform's too: the worker's only duty is to error-callback in-flight jobs on
+  graceful shutdown so they get re-queued (see `api.py`'s docstring).
 - Judge/author with a **local model** (no Anthropic cost, candidate code never
   leaves the machine): run Ollama, then
   `ASSESS_LLM_PROVIDER=ollama uv run assess ...` (default `qwen3-coder:30b`,
