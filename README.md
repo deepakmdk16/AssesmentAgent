@@ -134,7 +134,7 @@ the rubric do the work.
 There is one harness per LLM surface. All three need a real `ANTHROPIC_API_KEY`
 — **offline they SKIP**, so a green `uv run pytest` is not evidence any of them
 passed. Re-run all three after any model or prompt change; current baselines are
-recorded in [STATUS.md](STATUS.md).
+recorded in [docs/EVAL_BASELINES.md](docs/EVAL_BASELINES.md).
 
 ```bash
 uv run assess-eval               # the quality judge (below)
