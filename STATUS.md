@@ -1,214 +1,24 @@
 # STATUS — Assessment Agent
 
-Pending / next work, plus the small amount of **reference** data needed to tell a
-regression from noise (the eval baselines). Feature *history* is `git log`
-(commits are per-slice and detailed) — there is deliberately no changelog file.
-Update this file in the same commit that opens or closes an item (pre-push
-checkpoint #5). Durable architecture / boundary / invariants live in CLAUDE.md +
-CONVENTIONS.md.
+**Open items only.** Anything already done is history and belongs in `git log`
+(commits are per-slice and detailed; there is deliberately no changelog file).
+Close an item by **deleting its lines** in the commit that closes the work
+(pre-push checkpoint #5) — never by annotating it as DONE.
 
-## Open items
+Eval baselines → `docs/EVAL_BASELINES.md` (checkpoint #4 reads them).
+Durable architecture, boundary and invariants → CLAUDE.md + CONVENTIONS.md.
+Organisation, billing, privacy and deploy epics live in
+`../assessment-platform/STATUS.md`.
 
-### Runner sandboxing — landed; prod bring-up remains
-The OS sandbox that closes the fork-bomb / network-egress / JVM-Go-memory gap now
-exists: `sandbox.py` wraps each untrusted child's argv in **nsjail** (fresh network
-namespace = no egress, all capabilities dropped, cgroup-v2 **memory + pids**
-ceilings), selected by `ASSESS_SANDBOX`. The `Dockerfile` bundles nsjail + every
-toolchain and sets `ASSESS_SANDBOX=nsjail`, so production runs sandboxed by
-default; macOS/dev/CI fall through to a no-op passthrough (today's rlimits + killpg
-only). Forcing `ASSESS_SANDBOX=nsjail` where nsjail is missing fails the run loudly
-rather than executing untrusted code open.
+Priority: **P1** first paying customers hit it · **P2** fix before scale · **P3** polish.
+Effort: **XS** minutes · **S** self-contained · **M** multi-file · **L** data + API + UI.
 
-**Validated end-to-end on real nsjail** (Docker, `--privileged --cgroupns=host`,
-2026-07-19): a correct submission runs, network egress is blocked, C compiles+runs,
-and a 1 GB allocation is killed by a 256 MB cgroup — `test_sandbox_nsjail.py` passes
-(it SKIPs where nsjail is absent, like the eval harnesses). Bring-up shook out four
-real nsjail-flag facts now baked into `sandbox.py`: the rw bind flag is `--bindmount`
-(not `--bindmount_rw`); nsjail owns the rlimits so the runner skips its preexec caps
-under the sandbox (else RLIMIT_AS raise → EPERM); `--rlimit_as inf` + cgroup is what
-bounds JVM/Go memory; and nsjail `execve()`s argv[0] literally so a bare `python3`
-must be resolved to an absolute path and a minimal PATH/HOME injected (host env is
-cleared, which usefully keeps secrets out of candidate code).
+**Sequence:** (1) organisation → billing (platform X01 → X02) · (2) privacy and email
+· (3) deploy + ops (A06, A07, X05, X08) · (4) the rest by priority.
 
-Still to do:
-- **Optional hardening not yet added**: a seccomp-bpf syscall filter, and per-run
-  cgroup CPU limits (today CPU is bounded only by the wall-clock timeout).
-- **The uid remap stays off**: the jail runs as root-in-container (nsjail warns).
-  The container is the outer boundary; revisit if the worker ever runs less isolated.
+---
 
-Recorded so a third rlimit attempt doesn't repeat it — **an rlimit expresses a
-proxy, not the intent; only a cgroup can say "this submission gets N megabytes / M
-processes"** (now delivered by nsjail's cgroup controllers above):
-- `RLIMIT_NPROC` — counts per *UID*, not per process tree, so it cannot bound one
-  submission. Rejected; orphans are handled by the process-group kill instead.
-- `RLIMIT_AS` — caps *address space*, not memory in use. The JVM and Go reserve
-  GBs of untouched virtual space at startup, so it stops them booting rather than
-  bounding them; skipped for those two via `Language.address_space_capped`. It
-  survives as best-effort on the passthrough path (a runaway CPython allocation on
-  Linux); the nsjail cgroup is what actually bounds memory for every language now.
-
-## Other pending work
-
-- **Local-LLM provider (landed + baselined; the flake root-caused + fixed
-  2026-08-03).** `llm.py` selects `ASSESS_LLM_PROVIDER` (anthropic default /
-  ollama local via `ollama_chat`). **Judge, authoring, and adversarial** all
-  route through it, verified live on `qwen3-coder:30b`: judge — strong O(n)→4.5,
-  buggy O(n²)→1.5 with complexity flagged; authoring — a Kadane brief drafted
-  into a valid question whose own executed reference validates (warnings=[]);
-  adversarial — probed 8 cases on correct code with 0 findings (no false
-  positives). All $0, schema-valid, with offline routing/degradation unit tests
-  per surface. **Qwen now has its own eval baseline** (see the reference section
-  below): judge 7/7 at $0, drafting 4/4, adversarial 2/2×3 consecutive runs —
-  the malformed-JSON flake on the probe and on grid-shaped drafting was
-  root-caused (a repetition loop inside a JSON string field, general to both
-  generative surfaces) and is now recovered by an escalated in-call retry in
-  `ollama_chat` (details in the greedy-decoding section below). Both eval
-  harnesses used to gate `SKIP` on `ANTHROPIC_API_KEY` directly, which hid that
-  failure as a skip; they now gate on `provider()`, so a configured-but-failing
-  local backend reports FAIL.
-- **Authoring: drafted references are now cross-checked (landed; one gap left).**
-  A drafted `reference_solution` is the oracle — every `expected` comes from
-  executing it — so a reference that is *wrong but deterministic* used to pass
-  every check and then mark correct candidates wrong. `DraftSpec` now carries an
-  optional `brute_force_solution` and `_cross_check_oracle` re-derives each small
-  correctness case with it, **dropping** any case the two disagree on (the
-  performance case is never brute-forced). Missing/broken/timed-out second
-  opinions degrade to a warning. Measured on 5 hard briefs × `qwen3-coder:30b`:
-  5/5 emitted a brute force, 0 disputes, and all 5 references verified correct
-  against independently-written brute forces (1800 random cases, 0 mismatches).
-  **The prompt fix matters as much as the check:** the first run produced a false
-  positive that destroyed a good question — the "brute force" was a second DP that
-  invented its own input format, misparsed, printed `0`, and outvoted a correct
-  reference. `question_draft.md` now requires the brute force to parse the
-  reference's exact stdin and to contain no DP/heap/memo.
-  Still open: **spec precision**, the defect this does *not* catch. Across the
-  same 5 briefs, 0/5 drafts mentioned integer overflow and neither ambiguous brief
-  pinned its ambiguity (Damerau-Levenshtein OSA-vs-unrestricted; the strict
-  `a[i] == 2*a[j]` boundary). A correct candidate still fails on a rule the prompt
-  never stated. Also 1/5 still used `queue<>` with only `<stack>` included — it
-  builds on libc++ via a transitive include and would fail elsewhere.
-- **Test-case floor landed (F4) — draft-eval RE-RUN DONE (local).** `validate_question`
-  now requires **≥ 4 correctness cases** (`MIN_CORRECTNESS_CASES`, exempts the perf
-  case), matching the draft-eval's `min_correctness_cases`, so both hand-authored
-  and AI-drafted questions must clear it. Offline unit tests updated + green.
-  **Re-baselined 2026-07-23 on `qwen3-coder:30b`: assess-draft-eval 3/3, drafts at
-  7 / 5 / 7 correctness — all above the floor, so it rejects nothing real.** A
-  Sonnet re-run (needs a key) would confirm on that model, but the floor is
-  structural and the local run is strong evidence.
-- **Difficulty now has prompt semantics (T3) — no-regression CONFIRMED (local);
-  differentiation now measured (DONE 2026-08-03).** `DIFFICULTY: easy|medium|hard`
-  used to be a bare label; `question_draft.md` now has a "Calibrating to the
-  requested difficulty" section tying each level to concrete levers (constraint
-  size → forced complexity, algorithmic depth, edge-case emphasis).
-  **assess-draft-eval re-run 2026-07-23 on `qwen3-coder:30b` with the new prompt
-  active: 3/3, every draft's reference still grades PASS 100% — the difficulty
-  section did not regress drafting.** The once-owed differentiation eval now
-  exists: `DIFFERENTIATION_CASES` (`pair_sum_tiers`) drafts the *same* brief at
-  easy/medium/hard — deliberately pinning no `target_complexity`, so difficulty
-  alone must move the levers — and `_differentiation_verdict` requires a strict
-  easy→hard separation (complexity rank rises, size bound rises ≥10× — the
-  parity guard's own drift threshold — or hard states a big bound where easy
-  states none parseable). A size bound that *shrinks* as tiers rise fails as
-  inverted; a falling complexity rank alone does not (a hard problem's insight
-  can BE a low bound, per the calibration guard), it just isn't separation.
-  Verdict logic is pure and offline-unit-tested (10 tests, incl. the harness
-  half through the real parsers); live it passed 2/2 this session on
-  `qwen3-coder:30b` (size bound rose N≈1e3→1e5). Keyed Sonnet baseline still
-  owed at the next checkpoint-#4 run.
-  **Enforce, don't just instruct — post-draft guard DONE 2026-07-26.** The
-  difficulty→levers mapping was a *soft prompt* with nothing checking the model
-  obeyed. `authoring._check_difficulty_calibration` now reads the two levers back
-  after a draft validates and **warns** (never rejects — difficulty is a soft
-  signal, so a mislabel must not throw away a valid question the way a broken
-  oracle does) on a clear mismatch with the requested difficulty: `constraints`
-  size outside the tier's band (easy too large / medium+hard too small to force
-  the naive to TLE), `required_complexity` heavier than an easy tier or trivial
-  for medium, and a difficulty-independent **feasibility** cross-check (the
-  claimed complexity at the stated N must clear the time limit, else the
-  reference a candidate matches would itself TLE). It stays silent when a lever
-  can't be parsed and the bands are wide, so false positives are near zero; the
-  two parsers (`_parse_size_bound`, `_complexity_rank`) are the intended
-  **parity check** for multi-question set generation. No prompt change, so the
-  eval baselines are unaffected (a keyed re-run is confirmatory, not required).
-  The differentiation eval this paragraph used to owe landed 2026-08-03 — see
-  the T3 entry above (`DIFFERENTIATION_CASES` in the draft eval).
-  Note the guard is heuristic on free-text
-  `constraints`: it skips sizes < 1e3 (can't tell an upper bound from the `1` in
-  `1 ≤ n`), so a "medium, N≤100" mislabel slips through — the common large-bound
-  miscalibration is what it catches.
-- **Multi-question set generation (cross-repo) — agent half DONE 2026-07-26; the
-  platform half has since shipped too (VS1 #36 + VS2 #37), so only the
-  regeneration follow-up at the end of this entry is still open.** `authoring.draft_question_set`
-  drafts **K variants** for one brief by calling `draft_question` K times at the
-  **same** pinned `difficulty` + `target_complexity` (K independent, executed-oracle
-  drafts — **not** one prompt asking for K questions, which dilutes each and wrecks
-  parity). `_check_set_parity` reuses the calibration parsers (`_parse_size_bound`,
-  `_complexity_rank`) to warn when siblings drift — differing complexity rank, or
-  size bounds ≥10× apart — so no candidate gets an easier variant than another;
-  advisory only, silent on unparseable levers, like the calibration guard. Returns
-  a `DraftSetResult` (per-variant `DraftResult`s + set-level warnings; a variant
-  shortfall is warned, not fatal). **`POST /questions/draft-set` on `assess-api`
-  DONE 2026-07-26** (`count` 2..8, same token/signature/rate-limit guards as
-  `/questions/draft`, shares the `draft` rate bucket): returns every variant +
-  set-level warnings; a partial set (some variants unusable) still 200s so the
-  caller judges whether the usable count suffices, only an all-failed set 422s;
-  offline `ANTHROPIC_API_KEY`-absent path 503s like the single draft.
-  Offline-tested end to end. The platform half (UI to request a K-variant set,
-  storage, per-candidate assignment, and variant-set slots inside an assessment)
-  **landed 2026-07-26** — see `../assessment-platform/STATUS.md` §A VS1/VS2.
-  **Still to do here:** parity is heuristic post-hoc (warn, don't regenerate the
-  outlier) — regeneration/backoff of a drifting variant is a later refinement if
-  parity warnings prove common.
-- **Candidate-feedback agent (cross-repo, not yet chosen).** Once the platform can
-  surface it — actionable feedback to candidates. Spans both repos.
-- **Net-new agent-side ideas (unscheduled).** Per-candidate unique question variants
-  (compounds the executed-oracle moat + anti-cheat), reference generated in the
-  candidate's own language, and difficulty auto-calibration from real pass-rates.
-  Full cross-repo idea list lives in `../assessment-platform/STATUS.md` §D (the old
-  PRODUCT_BACKLOG was consolidated there and deleted, 2026-07-24).
-- **Multiple examples per question (deferred).** `Question`/loader/report hold a
-  single example; the authoring vision wants a list. Extend when the authoring UI
-  needs it.
-- **Parked cost optimizations.** Enum/coded judge output + repo-side prose catalog;
-  Batch API on the email path (50% off, fits async delivery); warm-cache cadence /
-  1-hour TTL. Revisit together. (See README → Future cost optimizations.) There is
-  now real data to aim at: output is 3153 of ~7355 tokens per candidate, so the
-  enum/coded-output idea targets the larger, more expensive half.
-- **Composite score (optional).** Weighted verdict-score + quality. The
-  `required_complexity`-in-report half is already done.
-
-## SaaS-launch audit — 2026-09-06 (open items, ordered P0 → P3)
-
-**How this list was produced (2026-09-06).** Every DONE claim in both STATUS files was traced
-to code and tests by five independent read-only audits (agent claims, platform backend,
-web frontend, SaaS readiness, code quality), then the high-impact claims were checked
-live: both `checkpoints.sh` gates green (agent 265 passed / 4 skipped, platform 266
-passed + web 113 vitest + build), Playwright E2E 9/9, the real-wire cross-repo smoke
-(`scripts/smoke_e2e.py`) PASS, the full platform API flow (register → question →
-assessment → invite → start → draft/events/run → submit → callback → attempts/CSV/
-analytics → archive/delete → cross-owner 403) against a real **Postgres 16** with all 19
-migrations applied, the agent **Docker image built** and its nsjail sandbox exercised
-under `--privileged` over HTTP (egress blocked, 1 GB alloc killed, forks capped at 63,
-C compiles, env clean), and every P1 below re-read at the cited lines. **Not validated:**
-the three LLM surfaces (judge / drafting / adversarial) — no `ANTHROPIC_API_KEY` on the
-machine and the local Ollama install is broken (see A24), and the weekly keyed CI evals
-have been red since 2026-07-27 (A23). An adversarial re-verification workflow was
-started; 19 independent refuters ran before the account session limit stopped it and
-all 19 confirmed their finding (tagged below) — the remaining VERIFY-status items carry
-the tag "single-audit claim". Priorities: **P0** blocks taking money or endangers
-customers · **P1** first paying customers hit it · **P2** fix before scale · **P3** polish.
-Effort: XS minutes · S self-contained · M multi-file · L data + API + UI.
-
-Agent-repo items only (29: P0: 0, P1: 5, P2: 14, P3: 10). Cross-repo and platform items
-(the organisation/billing/privacy/deploy epics) live in
-`../assessment-platform/STATUS.md` §E.
-
-**Suggested sequence** (the cheap P0/P1 blockers — P01, P02, P04, A01, A03, P09, P19,
-A32, W01, W02 — and the grading-durability epic — A04 + P05 + P10 + P15 — landed
-2026-09-07): (1) accounts → organisation → billing (P13 → X01 → X02); (2) privacy
-(X03, X04) and email/notifications (X06, X07); (3) deploy + ops (X05, X08, A06, A07,
-P26, X11); (4) everything else by priority. Close each item by deleting it here in
-the same commit (checkpoint #5).
+## Launch audit — 2026-09-06
 
 - **A02 · P1 · S — Auto-Ollama provider default breaks a keyless worker and
 contradicts the docs.**
@@ -506,144 +316,32 @@ already satisfies.**
   availability when ASSESS_SANDBOX=nsjail.
   _Verified: cited lines read in this audit; source: saas._
 
-## Reference — eval baselines (not pending work)
+---
 
-Not open items; recorded here because CLAUDE.md checkpoint #4 points at them, and
-because a bare "3/3 passed" can't distinguish a regression from normal variance
-without them. **All green on claude-sonnet-4-6, 2026-07-17**, re-run after the
-`llm.wrap_untrusted` prompt change — the fence degraded nothing.
+## Backlog — unscheduled
 
-Re-run all three after any model/prompt change. **Offline they SKIP, so a green
-`pytest` is never evidence they passed.**
-
-- **Judge** — `assess-eval` ([eval.py](assessment_agent/eval.py)): **7/7
-  verdicts**, plus the reported (never gated) quality labels at 7/7 complexity and
-  7/7 meets-constraints. Cost **$0.0109/candidate → ~$10.90 per 1,000** (4202 in /
-  3153 out, 17730 cache-read — the rubric prefix caches as designed).
-- **Drafting** — `assess-draft-eval` ([draft_eval.py](assessment_agent/draft_eval.py)):
-  each brief must draft into a valid question whose own reference grades PASS
-  100%. **3/3:** two_sum 7+1, reverse_words 8+1, count_islands 10+1. The case
-  *counts* drift run to run (a previous baseline saw 7+1 / 9+1 for the last two)
-  — the model proposes inputs and only those surviving the reference run are kept.
-  Treat it as ~7-10 correctness + 1 perf, **not** a fixed number; the anchor that
-  must not move is "the drafted question's own reference grades PASS 100%".
-- **Adversarial gen** — `assess-adversarial-eval` ([adversarial_eval.py](assessment_agent/adversarial_eval.py)):
-  the probe runs against known-correct references and must generate cases yet
-  report ZERO findings (a finding on correct code = a false positive). **2/2:**
-  strong + knapsack_good each probed 8, no crash/timeout.
-
-### Local model — `qwen3-coder:30b`, 2026-07-21 (flake fixed 2026-08-03)
-
-Its own baseline, not a substitute for the one above: with no `ANTHROPIC_API_KEY`
-the provider auto-selects Ollama, so these are what `assess-*-eval` report on a
-keyless machine. **All three surfaces now pass locally**, at $0 and with
-candidate code never leaving the machine; the structured-output flake that made
-the probe (and one drafting anchor) unreliable is root-caused and fixed — see
-the greedy-decoding section below.
-
-- **Judge — 7/7 verdicts, 7/7 complexity, 7/7 meets-constraints, $0.** Matches
-  Sonnet on every anchor including both deterministic ones (strong→PASS,
-  buggy→FAIL) and both TLE cases. The judge is the surface where a local model
-  costs nothing and gives up nothing measurable.
-- **Drafting — 3/3 anchors: two_sum 7+1, reverse_words 5+1, count_islands 8+1.**
-  Close to Sonnet's 7+1 / 8+1 / 10+1. Before the prompt fix this was 3+1 / 3+1 /
-  5+1: `correctness_inputs` asked for "several" small inputs, and a vague
-  quantifier gets satisfied *minimally* by a weaker model — Sonnet reads "several"
-  as 7-10, Qwen read it as 3. It now states a floor (>= 6, aim 8-10) plus a
-  category checklist, and `min_correctness_cases` moved 3 -> 4 so the harness
-  actually holds the line. Drafting also needed the decoding fix below before it
-  was reliable on non-trivial briefs.
-  **2026-08-03: the count_islands flake is root-caused and fixed.** It had
-  flaked in both runs of a re-baseline session (a 2-attempt timeout at the
-  120 s default, then `Unterminated string (char 2113)` with a 300 s budget) —
-  confirmed by direct repro to be the same repetition loop as the probe's
-  `knapsack_good` flake (surface-general, not adversarial-specific; the model
-  loops emitting a grid literal `0101…` inside the `stdin` string field, or
-  deliberately starts a forbidden 1000×1000 "max_size" grid, until cut off).
-  Fixed by the escalated in-call retry in `ollama_chat` (see below). Post-fix:
-  `assess-draft-eval` **4/4** (count_islands 8 corr + 1 perf, reference PASS
-  100%; differentiation size bound rose N≈1e3→1e5) at the default timeout.
-- **Adversarial — FIXED 2026-08-03: 2/2 in three consecutive runs at the
-  default 120 s timeout.** Was flaky (2/2 once, then 1/2 twice): `strong`
-  passed every time, `knapsack_good` intermittently emitted malformed JSON —
-  once as a timeout at the 120 s default, once as `Unterminated string` with a
-  300 s budget. Direct repro (16 baseline calls) put the per-call flake at
-  ~40-50% for this anchor and pinned the cause: at temperature 0.3 the model
-  still falls into a repetition loop (`1 1000\n` / `1 1` repeated ×50-80)
-  inside the `stdin` string field — where Ollama's grammar-constrained
-  decoding can't reach — runs to the 8192-token ceiling (~140 s, so it's the
-  *same* event behind both the timeout face and the unterminated-JSON face),
-  and gets cut off mid-string. The answer to "schema-specific or general?" is
-  **general**: drafting's count_islands anchor failed with the identical
-  signature. Fixed in `ollama_chat` (see the greedy-decoding section below).
-  The probe remains opt-in and advisory, but no longer needs to be left off on
-  a local deployment.
-  **Fixed (2026-07-24):** the harness used to print "drew a finding (false
-  positive)" for *every* failure, even a 0-case generation (a timeout or
-  unparseable output). `_check` now returns distinct `EMPTY` vs `FINDING`
-  statuses and the summary prints the guidance that matches the actual cause.
-
-#### Greedy decoding traps a local model — both generative surfaces
-
-The single most expensive lesson of the local-provider work, recorded because it
-will recur with **any** local model and it presents as three unrelated bugs.
-
-At `temperature: 0` a local model that starts emitting repetitive structure
-cannot leave it. It hit both generative surfaces, in the same way, for the same
-reason — a long run of similar-looking tokens:
-
-- **Adversarial** — `knapsack_01`, the one question whose input format is *N
-  repeated lines*, emitted `"1 1000\n"` forever: 1069 s, 0 cases probed, and it
-  *still* timed out at `ASSESS_LLM_TIMEOUT_S=600`. Kadane's single-line array gave
-  it nothing to loop on, which is why `strong` always passed.
-- **Authoring** — a draft is two whole programs plus eight similar test inputs.
-  On a shortest-path brief the JSON broke mid-string at char 2424 and repeated to
-  the token ceiling (147 s, unparseable). Today's own prompt work made this
-  *worse*: adding `brute_force_solution` and raising the case floor roughly
-  doubled the output and pushed authoring over the same cliff.
-
-It is not a comprehension failure — the adversarial prompt already forbade large
-literal inputs. The model could not escape the loop to obey it.
-
-Three changes, all verified end to end:
-
-1. **Both generative Ollama paths run at `temperature 0.3`.** Adversarial: 138 s
-   unparseable -> **7 s, 8 valid cases**. Authoring: 147 s unparseable -> **~25 s,
-   8 correctness inputs**, and a live portal draft went from failing twice in
-   298 s to validating in **24 s with no warnings**. The **judge stays at 0** — its
-   output is short, non-repetitive, and score stability is worth keeping.
-2. **Every local call carries a `num_predict` ceiling** (`ASSESS_OLLAMA_MAX_TOKENS`,
-   default 8192). This is what turned an unbounded hang into a bounded failure
-   *before* the temperature fix, and it still backstops any future runaway.
-3. **`ASSESS_LLM_TIMEOUT_S` needs raising for local models** (120 s is Claude-tuned).
-   Note the platform's `AGENT_DRAFT_TIMEOUT_S` must exceed
-   `ASSESS_LLM_TIMEOUT_S * ASSESS_DRAFT_ATTEMPTS`, or it aborts a draft that is
-   still working — that mismatch surfaced as a bogus 502 "couldn't reach the
-   drafting service". **2026-08-03: the multiplier doubled** — with the in-call
-   retry below, one `ollama_chat` call is worst-case ~2× `ASSESS_LLM_TIMEOUT_S`.
-
-**Retries are worthless without sampling variation.** `_DRAFT_ATTEMPTS` exists
-because "drafting is stochastic… asking again tends to produce a working draft."
-That is true of Claude and **false at temperature 0**: the retry reproduced a
-byte-identical failure at the same character offset, so two attempts only doubled
-the wait. Any future retry/backoff logic on a local path must change *something*
-between attempts.
-
-**2026-08-03 — temperature 0.3 was necessary but not sufficient; the fix is an
-escalated in-call retry.** Even at 0.3 the loop recurred on ~40-50% of
-`knapsack_good` probe calls and ~15-25% of count_islands drafts (repro over
-16 baseline calls per surface); the grammar-constrained `format` can't help
-because the loop lives *inside* a string field, and the truncated reply
-surfaced as either a client timeout (120 s default) or a baffling
-`Unterminated string` JSON error (larger budget) — the same event wearing two
-faces, plus a rarer third (a ~2 k-char reply with no `done_reason` at all).
-`ollama_chat` now treats any incomplete reply (`done_reason` != "stop", or a
-client timeout) as retryable ONCE, at temperature +0.3 **with
-`repeat_penalty` 1.15 over a `repeat_last_n` 256 window** — the penalty taxes
-exactly the just-repeated tokens a loop is made of, and it is what actually
-breaks the attractor: measured recovery 7/7 failures vs 2/4 for a hotter
-retry alone. The happy path is byte-identical to the baselined config (no
-penalty on the first call), a doubly-incomplete call raises a diagnosis
-naming the loop and both knobs instead of a JSON parse error, and both
-attempts' tokens count toward usage. Verified live at the default timeout:
-`assess-adversarial-eval` 2/2 × 3 consecutive runs, `assess-draft-eval` 4/4.
+- **Sandbox hardening.** A seccomp-bpf syscall filter and per-run cgroup CPU limits
+  (CPU is bounded only by the wall-clock timeout today). The uid remap stays off —
+  the jail runs as root-in-container and the container is the outer boundary.
+  Tracked as A07; don't duplicate it here.
+- **Spec precision in drafted questions.** The oracle cross-check catches a *wrong*
+  reference, not an *underspecified* one. Measured across 5 hard briefs: 0/5 drafts
+  mentioned integer overflow, and neither ambiguous brief pinned its ambiguity. A
+  correct candidate still fails on a rule the prompt never stated.
+- **Variant-set parity: regenerate, don't just warn.** `_check_set_parity` is
+  advisory and post-hoc. Add regeneration or backoff for a drifting variant if
+  parity warnings prove common in practice.
+- **Candidate-feedback agent** (cross-repo, not yet chosen) — actionable feedback to
+  candidates, once the platform can surface it.
+- **Net-new agent-side ideas.** Reference generated in the candidate's own language;
+  difficulty auto-calibration from real pass-rates. Full cross-repo list:
+  `../assessment-platform/STATUS.md`.
+- **Multiple examples per question (deferred).** `Question`/loader/report hold a
+  single example; the authoring vision wants a list. Extend when the UI needs it.
+- **Parked cost optimizations.** Enum/coded judge output plus a repo-side prose
+  catalog; Batch API on the email path (50% off, fits async delivery); warm-cache
+  cadence / 1-hour TTL. Revisit together, and aim at output tokens: 3153 of ~7355
+  per **eval run of 7 cases** — not per candidate. See README → Future cost
+  optimizations.
+- **Composite score (optional).** Weighted verdict-score + quality; the
+  `required_complexity`-in-report half is already done.
