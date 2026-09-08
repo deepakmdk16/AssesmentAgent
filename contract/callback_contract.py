@@ -14,8 +14,10 @@ mirror it. Keep it stdlib-only so both repos import it with no new dependency.
 
 Two payload shapes are valid, matching the agent's two delivery paths:
   * a *graded* result — carries verdict / score_pct / reason (the full envelope);
-  * an *error* payload from the worker's exception path — carries job_id + error
-    only, which the platform tolerates (it defaults verdict to ERROR, score to 0).
+  * an *error* payload from the worker's exception path (or its shutdown flush) —
+    carries job_id + error only, which the platform reads as "the job never
+    completed": it re-queues the submission for its reaper while trigger attempts
+    remain, and stores an ERROR result only once they are exhausted.
 ``job_id`` is the single field required by both.
 """
 

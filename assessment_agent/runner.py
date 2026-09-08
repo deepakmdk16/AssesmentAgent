@@ -12,7 +12,9 @@ cases are held to it because the per-child resource limits are applied with
 `preexec_fn`, which CPython documents as unsafe to use from a multithreaded
 parent — a fork/exec deadlock there would hang a candidate's grade. Small
 correctness inputs are cheap, so the throughput we give up is worth strictly
-more as a guarantee. See `run_submission`.
+more as a guarantee. See `run_submission`. The same reasoning holds one level
+up: whole submissions are serialised process-wide by `_EXEC_LOCK`, because the
+API runs jobs and the candidate Run buttons on a threadpool.
 
 Security note: this executes untrusted candidate code. Beyond the per-run timeout,
 each child gets a best-effort output ceiling (`RLIMIT_FSIZE`) and — for languages
@@ -45,6 +47,7 @@ import shutil
 import signal
 import subprocess
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -316,6 +319,16 @@ def _run_case(
     )
 
 
+# One execution at a time per process. The API runs grading jobs and the
+# candidate Run buttons on a threadpool, so without this two submissions contend
+# for the CPU — the performance case's measured duration, which decides the TLE
+# gate and therefore the verdict, becomes load-dependent — and the passthrough
+# path forks with `preexec_fn` from several threads at once (the deadlock the
+# module docstring warns about). Throughput is deliberately traded for a
+# correct, reproducible verdict: scale by adding worker processes, not threads.
+_EXEC_LOCK = threading.Lock()
+
+
 def run_submission(
     source: str,
     language: str,
@@ -323,6 +336,26 @@ def run_submission(
     *,
     time_limit_s: float = 2.0,
     compile_timeout: int = 60,
+) -> ExecutionReport:
+    """Compile (if needed) and run `source` against every case, serialised
+    process-wide by `_EXEC_LOCK` — see the note above it."""
+    with _EXEC_LOCK:
+        return _run_submission_unlocked(
+            source,
+            language,
+            test_cases,
+            time_limit_s=time_limit_s,
+            compile_timeout=compile_timeout,
+        )
+
+
+def _run_submission_unlocked(
+    source: str,
+    language: str,
+    test_cases: tuple[TestCase, ...],
+    *,
+    time_limit_s: float,
+    compile_timeout: int,
 ) -> ExecutionReport:
     lang = LANGUAGES.get(language)
     if lang is None:

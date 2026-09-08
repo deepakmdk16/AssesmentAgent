@@ -9,7 +9,10 @@ delivers the result asynchronously:
 
     POST /assessments            -> 202 {job_id, status: "accepted"}
       (the work runs in the background; when done the agent POSTs the full result
-       to `callback_url` and/or emails the PDF to `email_to`)
+       to `callback_url` and/or emails the PDF to `email_to`. The platform mints
+       `job_id` and sends it in the body — a repeat of a job still in flight is
+       acknowledged again, not graded twice, so a trigger whose 202 was lost can
+       be retried safely. Absent, the agent mints one.)
     GET  /assessments/{job_id}   -> {status, result?}   polling fallback
     GET  /health
 
@@ -25,7 +28,15 @@ Run it with:  `uv run assess-api`  (or `uvicorn assessment_agent.api:app`).
 
 The in-memory `_JOBS` registry is transient run-state for the polling fallback,
 **not** a datastore — a multi-instance deployment should rely on `callback_url`,
-not this map. Auth is a shared-secret bearer token in the `X-Assess-Token` header
+not this map. Durability is the platform's: it owns the job record and
+re-triggers what it never hears back about. The agent's part is to be honest on
+the way down — on graceful shutdown (SIGTERM) it waits `ASSESS_SHUTDOWN_GRACE_S`
+for in-flight grades, then POSTs an error callback for each one still running so
+the platform re-queues it now rather than after its stale-job timeout (see
+`_flush_pending_callbacks`). A hard kill (SIGKILL/OOM) sends nothing; the
+platform's reaper covers that.
+
+Auth is a shared-secret bearer token in the `X-Assess-Token` header
 (env `ASSESS_API_TOKEN` for inbound, `CALLBACK_TOKEN` for the outbound callback)
 and is **fail-closed**: with `ASSESS_API_TOKEN` unset every authenticated route
 returns 503 unless `ASSESS_AUTH_DISABLED=1` is set to opt out explicitly (dev and
@@ -44,7 +55,9 @@ import tempfile
 import time
 import uuid
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -65,10 +78,27 @@ from .signing import SIGNATURE_HEADER, sign, verify
 
 logger = logging.getLogger(__name__)
 
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    yield
+    # Shutdown: uvicorn has already waited its graceful timeout for in-flight
+    # background jobs; whatever is still running will never deliver. Tell the
+    # platform now so it re-queues them (see `_flush_pending_callbacks`).
+    _flush_pending_callbacks()
+
+
 app = FastAPI(
     title="Assessment Agent",
     description="Stateless intake worker: grade a candidate submission against a supplied question.",
     version="0.2.0",
+    # This is an internal code-execution worker, not a public API: don't
+    # advertise its route surface. The platform is the only intended caller and
+    # already knows the contract (README documents it for humans).
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+    lifespan=_lifespan,
 )
 
 # Shared-secret auth (see also the platform's callback auth). Bearer tokens in the
@@ -175,6 +205,12 @@ def _rate_limit(bucket: str) -> Callable[[Request], None]:
 _MAX_JOBS = int(os.environ.get("ASSESS_MAX_JOBS", "1000"))
 _JOBS: OrderedDict[str, dict[str, Any]] = OrderedDict()
 
+# job_id -> callback_url for every accepted job that has not delivered yet. The
+# shutdown flush error-callbacks whatever is still here; `_run_job` removes its
+# entry before posting the real result, so a job finishing during the flush is
+# reported once, by whichever side got there first.
+_PENDING_CALLBACKS: dict[str, str] = {}
+
 # Ceiling on submitted source. Every endpoint here accepts attacker-supplied text
 # and buffers it in memory, so an unbounded body is a free denial of service. Far
 # above any real interview answer (~200 KB is thousands of lines) and well below
@@ -215,6 +251,12 @@ class AssessmentRequest(BaseModel):
         default=False,
         description="Run advisory adversarial edge-case probes (needs ANTHROPIC_API_KEY "
         "on the worker). Reported separately; never affects the score or verdict.",
+    )
+    job_id: str | None = Field(
+        default=None,
+        pattern=r"^[A-Za-z0-9_-]{1,64}$",
+        description="Caller-minted correlation id, echoed in the 202 and the callback. A "
+        "repeat for a job still in flight is acknowledged, not re-run. Minted here if absent.",
     )
 
 
@@ -502,8 +544,18 @@ def create_assessment(req: AssessmentRequest, background: BackgroundTasks) -> di
     if req.callback_url:
         _validate_callback_url(req.callback_url)
 
-    job_id = uuid.uuid4().hex
+    job_id = req.job_id or uuid.uuid4().hex
+    # A caller-minted id lets the platform retry a trigger whose 202 it lost
+    # without grading twice: a job still in flight is just acknowledged again. A
+    # finished one IS re-run — the platform only re-sends a job it never heard
+    # back about, or an interviewer asked for a fresh grade. Checked right before
+    # the record write so the check-then-insert window is a few bytecodes.
+    if req.job_id and _JOBS.get(job_id, {}).get("status") == "accepted":
+        logger.info("job %s re-sent while in flight; acknowledged again, not re-run", job_id)
+        return {"job_id": job_id, "status": "accepted"}
     _record_job(job_id, {"status": "accepted", "result": None, "error": None})
+    if req.callback_url:
+        _PENDING_CALLBACKS[job_id] = req.callback_url
     logger.info(
         "job %s accepted: language=%s question=%s adversarial=%s callback=%s email=%s",
         job_id,
@@ -570,6 +622,9 @@ def _run_job(job_id: str, req: AssessmentRequest, question, warnings: list[str])
         logger.exception("job %s failed after %.1fs", job_id, time.perf_counter() - started)
 
     if req.callback_url:
+        # Claim delivery before posting so the shutdown flush can't also report
+        # this job (it only flushes what is still registered).
+        _PENDING_CALLBACKS.pop(job_id, None)
         _post_callback(job_id, req.callback_url, payload)
 
 
@@ -581,8 +636,16 @@ _CALLBACK_ATTEMPTS = int(os.environ.get("ASSESS_CALLBACK_ATTEMPTS", "4"))
 _CALLBACK_BACKOFF_S = float(os.environ.get("ASSESS_CALLBACK_BACKOFF_S", "1.0"))
 
 
-def _post_callback(job_id: str, url: str, payload: dict) -> None:
-    """POST the result to the platform's callback URL, retrying transient failures."""
+def _post_callback(
+    job_id: str, url: str, payload: dict, *, attempts: int | None = None, timeout: float = 10.0
+) -> None:
+    """POST the result to the platform's callback URL, retrying transient failures.
+
+    `attempts` and `timeout` default to the normal delivery budget; the shutdown
+    flush passes a one-shot, short-timeout budget because it has seconds, not
+    minutes, before the process is killed.
+    """
+    tries = max(1, _CALLBACK_ATTEMPTS if attempts is None else attempts)
     headers = {"Content-Type": "application/json"}
     token = os.environ.get("CALLBACK_TOKEN")
     if token:
@@ -595,9 +658,9 @@ def _post_callback(job_id: str, url: str, payload: dict) -> None:
     if signing_secret:
         headers[SIGNATURE_HEADER] = sign(signing_secret, body)
 
-    for attempt in range(1, max(1, _CALLBACK_ATTEMPTS) + 1):
+    for attempt in range(1, tries + 1):
         try:
-            response = httpx.post(url, content=body, headers=headers, timeout=10.0)
+            response = httpx.post(url, content=body, headers=headers, timeout=timeout)
         except httpx.HTTPError as exc:
             reason: str = f"{type(exc).__name__}: {exc}"
         else:
@@ -616,25 +679,74 @@ def _post_callback(job_id: str, url: str, payload: dict) -> None:
                 return
             reason = f"HTTP {response.status_code}"
 
-        if attempt < max(1, _CALLBACK_ATTEMPTS):
+        if attempt < tries:
             delay = _CALLBACK_BACKOFF_S * (2 ** (attempt - 1))
             logger.warning(
                 "job %s callback attempt %d/%d failed (%s); retrying in %.1fs",
                 job_id,
                 attempt,
-                _CALLBACK_ATTEMPTS,
+                tries,
                 reason,
                 delay,
             )
             time.sleep(delay)
         else:
-            logger.error(
-                "job %s callback FAILED after %d attempts (%s) — result is lost unless "
-                "polled before eviction",
+            # Exhausting the normal budget loses a result (ERROR). The one-shot
+            # shutdown budget has the platform's reaper behind it (WARNING).
+            logger.log(
+                logging.ERROR if attempts is None else logging.WARNING,
+                "job %s callback FAILED after %d attempt(s) (%s)%s",
                 job_id,
-                _CALLBACK_ATTEMPTS,
+                tries,
                 reason,
+                " — result is lost unless polled before eviction"
+                if attempts is None
+                else "; the platform's reaper will re-trigger the job",
             )
+
+
+# Graceful stop. uvicorn waits ASSESS_SHUTDOWN_GRACE_S for in-flight jobs, then
+# the lifespan hook flushes error callbacks for the rest. The whole sequence must
+# fit inside the orchestrator's SIGTERM->SIGKILL grace (Docker's default is 10s),
+# so the flush gives each callback ONE attempt with a short timeout, in parallel.
+_SHUTDOWN_GRACE_S = int(os.environ.get("ASSESS_SHUTDOWN_GRACE_S", "5"))
+_SHUTDOWN_CALLBACK_TIMEOUT_S = float(os.environ.get("ASSESS_SHUTDOWN_CALLBACK_TIMEOUT_S", "2.0"))
+
+
+def _flush_pending_callbacks() -> int:
+    """Error-callback every accepted job that hasn't delivered; return how many.
+
+    Runs from the lifespan shutdown hook, after uvicorn's graceful wait. The
+    payload is the worker's ordinary exception-path envelope — the platform
+    already reads "no verdict + error" as infrastructure rather than the
+    candidate, and re-queues the submission. Entries are popped before posting
+    (atomic under the GIL), so a job finishing concurrently in its worker thread
+    is reported once; one that finishes after the flush still posts its real
+    result, which the platform accepts (a grade beats a re-queue).
+    """
+    pending: list[tuple[str, str]] = []
+    while _PENDING_CALLBACKS:
+        pending.append(_PENDING_CALLBACKS.popitem())
+    if not pending:
+        return 0
+    logger.warning(
+        "shutting down with %d job(s) still running; sending error callbacks so the "
+        "platform re-queues them",
+        len(pending),
+    )
+
+    def _notify(item: tuple[str, str]) -> None:
+        job_id, url = item
+        payload = {
+            "job_id": job_id,
+            "status": "error",
+            "error": "agent worker shut down before the job completed",
+        }
+        _post_callback(job_id, url, payload, attempts=1, timeout=_SHUTDOWN_CALLBACK_TIMEOUT_S)
+
+    with ThreadPoolExecutor(max_workers=min(8, len(pending))) as pool:
+        list(pool.map(_notify, pending))
+    return len(pending)
 
 
 def _email_report(result, candidate: str, recipient: str) -> dict:
@@ -675,4 +787,6 @@ def main() -> None:
     )
     host = os.environ.get("ASSESS_API_HOST", "127.0.0.1")
     port = int(os.environ.get("ASSESS_API_PORT", "8000"))
-    uvicorn.run(app, host=host, port=port)
+    # Bounded graceful stop: wait this long for in-flight grades, then the
+    # lifespan hook error-callbacks the rest (see `_flush_pending_callbacks`).
+    uvicorn.run(app, host=host, port=port, timeout_graceful_shutdown=_SHUTDOWN_GRACE_S)

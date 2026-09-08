@@ -113,3 +113,29 @@ def test_timeout_kills_the_whole_process_tree_not_just_the_child():
     time.sleep(0.3)  # give the kill a beat to land
     survivors = subprocess.run(["pgrep", "-f", marker], capture_output=True, text=True)
     assert survivors.stdout.strip() == "", "the forked grandchild outlived the timeout"
+
+
+def test_submissions_are_serialised_process_wide():
+    # A03: two graders on two threads must not overlap — the performance case's
+    # timing (which decides TLE, hence the verdict) is only meaningful
+    # uncontended, and the passthrough path must not fork with preexec_fn from
+    # several threads at once. Two 0.3 s programs serialised take >= 0.6 s.
+    import threading
+
+    src = "import time; time.sleep(0.3); print('ok')"
+    cases = (TestCase(name="c", stdin="", expected="ok\n"),)
+    ends: list[float] = []
+    starts: list[float] = []
+
+    def work() -> None:
+        starts.append(time.perf_counter())
+        report = run_submission(src, "python", cases, time_limit_s=5)
+        assert report.infra_error is None and report.outcomes[0].passed
+        ends.append(time.perf_counter())
+
+    threads = [threading.Thread(target=work) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert max(ends) - min(starts) >= 0.55
