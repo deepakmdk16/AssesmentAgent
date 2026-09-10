@@ -189,6 +189,12 @@ def _scrub_event(event: Event, _hint: dict[str, Any]) -> Event:
         request.pop("data", None)
         request.pop("cookies", None)
         request.pop("query_string", None)
+        # No route here takes a secret in the URL today, so this drops nothing of
+        # value — it is here so the two repos' scrubs cannot silently diverge, the
+        # way they had when the platform gained URL handling and this did not.
+        url = request.get("url")
+        if isinstance(url, str):
+            request["url"] = url.partition("?")[0]
         headers = request.get("headers")
         if isinstance(headers, dict):
             request["headers"] = {
