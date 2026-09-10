@@ -77,4 +77,10 @@ ENV ASSESS_SANDBOX=nsjail
 ENV ASSESS_API_HOST=0.0.0.0
 
 EXPOSE 8000
-CMD ["uv", "run", "assess-api"]
+# --frozen --no-dev: run from the venv this image already built. Plain `uv run`
+# re-resolves the lockfile at every container start, which downloads the *dev*
+# group (mypy, ruff, pytest) from PyPI before serving a single request — so the
+# image could not boot without network access to PyPI, boot time depended on a
+# third party (measured: 44s vs 0.85s here, and >180s under bandwidth
+# contention), and what ran was not the artifact that was tested.
+CMD ["uv", "run", "--frozen", "--no-dev", "assess-api"]
