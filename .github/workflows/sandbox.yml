@@ -1,0 +1,101 @@
+# The sandbox is the security boundary for untrusted candidate code, and nothing in
+# CI ever ran it: checkpoints.yml runs on a bare ubuntu runner where
+# tests/test_sandbox_nsjail.py SKIPs, and no job ever built the Dockerfile. A dropped
+# isolation flag, or an image that stopped shipping nsjail or a toolchain, shipped green.
+#
+# Deliberately NOT a job in checkpoints.yml: that file runs the same
+# scripts/checkpoints.sh as the local pre-push hook so there is exactly one definition
+# of "passing". A docker build cannot live in that script (no docker on a macOS dev
+# box, and ~8 minutes has no business in a pre-push hook), so this gets its own file —
+# the precedent evals.yml set for an expensive job needing something the checkpoints
+# runner lacks.
+#
+# ASSESS_REQUIRE_NSJAIL=1 turns the suite's SKIP into a collection error, so "nsjail
+# wasn't there" can never look like a pass — the posture of evals.yml's key guard.
+# What the jail actually does is in assessment_agent/sandbox.py.
+name: sandbox
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  # Nothing in the image is pinned (A08) — base image, apt toolchains and the runner
+  # kernel all move without a commit, so the boundary needs a heartbeat.
+  schedule:
+    - cron: '0 10 * * 1' # Mondays 10:00 UTC, an hour after evals.yml
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  nsjail:
+    runs-on: ubuntu-24.04 # pinned: nsjail's memory/pids ceilings are cgroup-v2 only
+    timeout-minutes: 30
+    # --privileged is root on the runner VM, so fork-PR code does not get it; the
+    # push-to-main run covers the merged result. Scheduled runs on a fork only burn
+    # someone else's minutes.
+    if: >-
+      github.repository == 'deepakmdk16/AssesmentAgent' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    steps:
+      - uses: actions/checkout@v4
+
+      # Fail loudly rather than green: on a cgroup-v1 runner nsjail's ceilings would be
+      # silently absent and the capped test arms would assert nothing. Printing
+      # subtree_control makes a delegation problem a ten-second read — it is the one
+      # thing sandbox.py's BRING-UP note still calls unvalidated.
+      - name: Require cgroup v2 on the runner
+        run: |
+          fs=$(stat -fc %T /sys/fs/cgroup)
+          echo "cgroup fs: $fs"
+          echo "delegated controllers: $(cat /sys/fs/cgroup/cgroup.subtree_control)"
+          if [ "$fs" != "cgroup2fs" ]; then
+            echo "::error::runner is not on cgroup v2 — nsjail's memory/pids ceilings would be silently absent"
+            exit 1
+          fi
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Default target, whole context: exactly what `docker build -t assessment-agent .`
+      # (Dockerfile:11) produces. The cache is the only addition — compiling nsjail from
+      # source is the expensive stage, hence mode=max; ignore-error keeps a cache
+      # hiccup from redding a security gate.
+      - name: Build the production image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: assessment-agent:ci
+          cache-from: type=gha,scope=sandbox
+          cache-to: type=gha,mode=max,scope=sandbox,ignore-error=true
+
+      # Layer 2 of "fail, don't skip": with nsjail present on a Linux image the suite
+      # physically cannot skip, whatever the env var says. Layer 1 is the module-level
+      # raise in tests/test_sandbox_nsjail.py.
+      - name: Require nsjail in the image
+        run: |
+          docker run --rm assessment-agent:ci sh -c 'command -v nsjail' \
+            || { echo "::error::the image shipped without nsjail"; exit 1; }
+
+      # tests/ is excluded by .dockerignore and the image installs --no-dev, so it has
+      # neither the suite nor pytest. Mount the suite read-only and layer pytest into an
+      # ephemeral uv overlay: --frozen --no-dev leaves /app/.venv byte-identical to the
+      # shipped one, so `assessment_agent` still resolves to the image's copy and only
+      # the harness comes from the checkout. --privileged --cgroupns=host are the flags
+      # Dockerfile:9-19 documents — keep them in step with it.
+      - name: Live sandbox suite inside the image
+        timeout-minutes: 10
+        run: |
+          docker run --rm --privileged --cgroupns=host \
+            -e ASSESS_REQUIRE_NSJAIL=1 \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -v "${{ github.workspace }}/tests:/app/tests:ro" \
+            assessment-agent:ci \
+            uv run --frozen --no-dev --with pytest \
+              pytest -q -rs -p no:cacheprovider tests/test_sandbox_nsjail.py

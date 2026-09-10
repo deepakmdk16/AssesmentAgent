@@ -139,3 +139,33 @@ def test_submissions_are_serialised_process_wide():
     for t in threads:
         t.join()
     assert max(ends) - min(starts) >= 0.55
+
+
+@pytest.mark.skipif(shutil.which("gcc") is None, reason="needs gcc to reach the compile step")
+def test_the_compile_step_is_jailed_with_only_the_pids_ceiling():
+    """The compile wrap is deliberately unlike the run wrap, and nothing pinned it.
+
+    No memory ceiling (compilers legitimately use a lot; `compile_timeout` bounds
+    them) and no output ceiling (nsjail's own 1 MB default would truncate the binary
+    gcc writes). Sharing the run step's kwargs — or dropping the wrap entirely, which
+    has no runtime symptom at all — would break every compiled language in production
+    while the rest of the suite stayed green.
+    """
+    calls: list[dict] = []
+    real = runner.sandbox_wrap
+
+    def record(argv, workdir, **kw):
+        calls.append(kw)
+        return real(argv, workdir, **kw)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(runner, "sandbox_wrap", record)
+        run_submission("int main(void){return 0;}\n", "c", (TestCase("t", "", ""),))
+
+    assert len(calls) == 2, f"expected a compile wrap then a run wrap, got {calls}"
+    assert calls[0] == {"pids_max": runner._PIDS_MAX}, calls[0]
+    assert calls[1] == {
+        "mem_bytes": runner._MEM_LIMIT_BYTES,
+        "pids_max": runner._PIDS_MAX,
+        "fsize_bytes": runner._OUTPUT_LIMIT_BYTES,
+    }, calls[1]

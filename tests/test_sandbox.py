@@ -83,12 +83,15 @@ def test_nsjail_applies_cgroup_ceilings(monkeypatch):
     assert "--use_cgroupv2" in cmd
     assert cmd[cmd.index("--cgroup_mem_max") + 1] == "123456"
     assert cmd[cmd.index("--cgroup_pids_max") + 1] == "64"
+    # Without this the ceiling is escapable by swapping — see _nsjail_wrap.
+    assert cmd[cmd.index("--cgroup_mem_swap_max") + 1] == "0"
 
 
 def test_nsjail_omits_disabled_ceilings(monkeypatch):
     # 0 disables, mirroring the rlimit convention.
     cmd = _nsjail(monkeypatch, mem_bytes=0, pids_max=0)
     assert "--cgroup_mem_max" not in cmd
+    assert "--cgroup_mem_swap_max" not in cmd
     assert "--cgroup_pids_max" not in cmd
     assert "--use_cgroupv2" not in cmd
 
@@ -125,3 +128,19 @@ def test_nsjail_leaves_pathful_argv0_untouched(monkeypatch):
     # "./program" (compiled binary, run relative to --cwd) must not be PATH-resolved.
     cmd = _nsjail(monkeypatch, argv=["./program"])
     assert cmd[cmd.index("--") + 1 :] == ["./program"]
+
+
+def test_nsjail_pins_the_isolation_flags_with_no_runtime_symptom(monkeypatch):
+    # These have no observable effect on a submission, so no live test can catch
+    # their removal: dropping --chroot / or --mode o weakens isolation silently, and
+    # --bindmount demoted to --bindmount_ro breaks only compiled languages. The
+    # workdir assertion above is satisfied by the --cwd value alone, so --bindmount
+    # could be deleted today with the whole suite staying green.
+    cmd = _nsjail(monkeypatch, mem_bytes=1, pids_max=1)
+    assert cmd[cmd.index("--mode") + 1] == "o"
+    assert cmd[cmd.index("--chroot") + 1] == "/"
+    assert cmd[cmd.index("--bindmount") + 1] == str(WORKDIR)  # -B (rw), not -R
+    assert cmd[cmd.index("--cwd") + 1] == str(WORKDIR)
+    # 0 = don't self-govern: the runner's timeout + killpg own the child's lifetime.
+    assert cmd[cmd.index("--time_limit") + 1] == "0"
+    assert cmd[cmd.index("--cgroupv2_mount") + 1] == "/sys/fs/cgroup"

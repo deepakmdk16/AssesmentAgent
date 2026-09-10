@@ -18,9 +18,10 @@
 #     the jail and — with ASSESS_SANDBOX=nsjail — the run fails loudly rather than
 #     executing unsandboxed, which is the intended safety posture.
 #
-# Verified end-to-end on 2026-07-19 (correct run, egress blocked, C compile+run,
-# cgroup OOM-kill); test_sandbox_nsjail.py is the check and SKIPs where nsjail is
-# absent (macOS dev, CI without nsjail) — same pattern as the eval harnesses.
+# tests/test_sandbox_nsjail.py is the check: .github/workflows/sandbox.yml builds this
+# image and runs that suite inside it with these exact flags, where a missing jail is
+# an error rather than a skip (PRs from this repo and push to main; fork PRs cannot
+# have --privileged and are skipped). It still SKIPs on a macOS dev box.
 
 # ---- Stage 1: build nsjail from source (not in Debian stable apt) ----
 FROM debian:bookworm-slim AS nsjail-build

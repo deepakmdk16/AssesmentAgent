@@ -297,8 +297,8 @@ bombs, network egress, or memory on the JVM/Go paths. That layer is
 [sandbox.py](assessment_agent/sandbox.py): it wraps each untrusted child in
 **nsjail** (no network, dropped capabilities, cgroup-v2 memory + pids ceilings)
 when `ASSESS_SANDBOX` selects it. The [Dockerfile](Dockerfile) bundles nsjail and
-turns it on by default (`ASSESS_SANDBOX=nsjail`); macOS/dev/CI fall through to a
-no-op passthrough (rlimits + killpg only). See runner.py / sandbox.py for the exact
+turns it on by default (`ASSESS_SANDBOX=nsjail`), and CI exercises it there; macOS
+and dev boxes fall through to a no-op passthrough (rlimits + killpg only). See runner.py / sandbox.py for the exact
 guarantees and the prod bring-up notes.
 
 Two further boundaries worth knowing:

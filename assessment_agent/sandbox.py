@@ -88,9 +88,11 @@ def _nsjail_wrap(
     A `mem_bytes`/`pids_max`/`fsize_bytes` of 0 omits that ceiling (0 disables),
     matching the rlimit convention in runner.py.
 
-    BRING-UP: the exact uid mapping and cgroup-v2 delegation are the two things to
-    validate the first time this runs on a real host — see the Dockerfile notes and
-    `test_sandbox_nsjail.py` (which SKIPs unless nsjail is installed).
+    cgroup-v2 delegation is exercised by `.github/workflows/sandbox.yml`, which builds
+    the image and runs `test_sandbox_nsjail.py` inside it — the memory and pids pairs
+    there fail if the ceilings are not really applied. It runs on PRs from this repo
+    and on push to main; a fork PR cannot have `--privileged` and is skipped (A35).
+    The uid mapping is still unvalidated and stays A07's.
     """
     cmd = [
         "nsjail",
@@ -131,6 +133,11 @@ def _nsjail_wrap(
         cmd += ["--use_cgroupv2", "--cgroupv2_mount", "/sys/fs/cgroup"]
         if mem_bytes > 0:
             cmd += ["--cgroup_mem_max", str(mem_bytes)]
+            # memory.max alone only pushes anonymous pages out to swap wherever the
+            # host has any (GitHub's runners ship a 4 GB swapfile), so a submission
+            # over the ceiling gets slow rather than stopped. Capping swap at 0 is
+            # what makes --cgroup_mem_max mean what this module's docstring says.
+            cmd += ["--cgroup_mem_swap_max", "0"]
         if pids_max > 0:
             cmd += ["--cgroup_pids_max", str(pids_max)]
 

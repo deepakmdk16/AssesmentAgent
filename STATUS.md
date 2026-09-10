@@ -14,7 +14,7 @@ Priority: **P1** first paying customers hit it · **P2** fix before scale · **P
 Effort: **XS** minutes · **S** self-contained · **M** multi-file · **L** data + API + UI.
 
 **Sequence:** (1) organisation → billing (platform X01 → X02) · (2) privacy and email
-· (3) deploy + ops (A06, A07) · (4) the rest by priority.
+· (3) deploy + ops (A07) · (4) the rest by priority.
 
 ---
 
@@ -49,21 +49,6 @@ contradicts the docs.**
   attempts=2, no deadline; api.py:193 count<=8; uvicorn.run (api.py:678) has n.
   _Verified: single-audit claim, not independently re-verified; 2 independent
   refuter(s) confirmed; source: trace._
-- **A06 · P1 · S — The sandbox (security boundary) has no CI coverage.**
-  Evidence: .github/workflows/checkpoints.yml runs on ubuntu-latest without nsjail;
-  tests/test_sandbox_nsjail.py:18-21 SKIPs there; no workflow builds the Dockerfile;
-  the file has only 2 tests (correct run, egress) while STATUS.md:22-25 claims C
-  compile + cgroup OOM are covered; live: image builds and both tests pass inside a
-  privileged container, and manual /run probes confirmed egress blocked, 1 GB alloc
-  killed, forks capped at 63, C compiles. Why: a regression in _nsjail_wrap flags or
-  the image ships green. Fix: CI job that builds the image and runs
-  test_sandbox_nsjail.py inside it; add OOM-kill, pids and C-compile cases; fail
-  (not skip) when CI=1.
-  Verifier note: refuter confirmed: Accurate: checkpoints.yml has no nsjail/docker
-  step; test_sandbox_nsjail.py:18-21 skips; neither repo builds the Dockerfile.
-  Partly mitigated: tests/test_sandbox.py:69-115 runs in CI and asserts --ifa.
-  _Verified: cited lines read in this audit; 2 independent refuter(s) confirmed;
-  source: trace,quality._
 - **A07 · P1 · M — Worker runs as root with --privileged; uid remap off; no seccomp;
 no CPU cgroup.**
   Evidence: Dockerfile has no USER (live: `id -u` = 0 in image); Dockerfile:12-17
@@ -75,8 +60,28 @@ no CPU cgroup.**
   document the minimal cap set; non-root USER with writable temp root; enable uid
   remap (fix 0700 workdir ownership); add --seccomp_policy and
   --cgroup_cpu_ms_per_sec; run on dedicated VMs (or gVisor/Firecracker) isolated
-  from the platform DB.
+  from the platform DB. Update .github/workflows/sandbox.yml's run flags in the
+  same commit (see A35).
   _Verified: live run in this audit; source: trace,saas._
+- **A35 · P2 · S — The live jail suite still has four uncovered properties, and its
+run flags will drift when A07 lands.**
+  Evidence: .github/workflows/sandbox.yml proves the memory and pids cgroups,
+  --chroot / read-only, the net namespace, env clearing and the C compile path, but
+  nothing proves (a) that the runner's killpg reaches through nsjail's PID namespace
+  on a TLE — nsjail is our direct child, the payload is pid 1 of a child pidns, so a
+  leaked spinner would still report timed_out=True; (b) --rlimit_fsize live (only the
+  bytes→MB conversion is unit-pinned); (c) that the jailed process cannot READ
+  /app/assessment_agent/questions.py — --chroot / makes the whole container readable,
+  which is a grading-integrity hole, not only a security one; (d) go/rust/cpp/node/
+  ruby in the jail (HOME=<workdir> exists for go's build cache and is untested).
+  Also sandbox.yml hard-codes --privileged --cgroupns=host, duplicating Dockerfile:12
+  with nothing keeping them in sync, and it cannot run on a fork PR (--privileged is
+  root on the runner) — a skipped job satisfies a required status check, so a fork PR
+  weakening the jail flags shows green; only the push-to-main run catches it. Why: A07 changes those flags (non-root USER, uid
+  remap, --cap-add SYS_ADMIN, --seccomp_policy, --cgroup_cpu_ms_per_sec) and the job
+  would keep proving a posture nobody deploys — A06's failure mode one level up.
+  Fix: add the four cases; update sandbox.yml in the same commit as any A07 flag
+  change, or source the flags from one place.
 - **A23 · P1 · XS — The weekly keyed evals workflow has failed every Monday since
 2026-07-27 (secret never set).**
   Evidence: gh run list --workflow evals.yml: 6 consecutive failures on schedule;
@@ -223,7 +228,7 @@ code.**
   Ollama is tried first); CLAUDE.md:125-126, README.md:134-137, STATUS.md:187-188,
   draft_eval.py:5-6, adversarial_eval.py:5-6 "offline they SKIP" (they FAIL under
   auto; assess-eval has no SKIP path); STATUS.md:154-155 "key-absent path 503s"
-  (auto → 422); STATUS.md:22-25 nsjail test coverage overstated; CLAUDE.md:100 "each
+  (auto → 422); CLAUDE.md:100 "each
   eval has a unit-tested half" (not eval.py); README.md:210-217 endpoint table omits
   POST /report and /questions/draft-set, README.md:226-227 + CLAUDE.md:85-87
   rate-limit lists omit draft-set; Dockerfile:12 run command unreachable; cli.py:167
