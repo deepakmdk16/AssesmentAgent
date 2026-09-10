@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import pytest
 
+from assessment_agent.observability import metrics
 from assessment_agent.ratelimit import limiter
 
 
@@ -34,6 +35,27 @@ def _pin_provider_anthropic(monkeypatch):
     itself is covered directly in `test_llm.py`.
     """
     monkeypatch.setenv("ASSESS_LLM_PROVIDER", "anthropic")
+
+
+@pytest.fixture(autouse=True)
+def _no_sentry(monkeypatch):
+    """Never let the suite reach a real Sentry project.
+
+    `init_sentry` runs from the lifespan, which every TestClient enters, and it
+    is gated only on the DSN — so a developer with ASSESS_SENTRY_DSN exported
+    would ship the suite's deliberate error paths to production. The platform has
+    a TESTING flag for this; this repo's equivalent is to unset the variable, the
+    same way auth is neutralised above.
+    """
+    monkeypatch.delenv("ASSESS_SENTRY_DSN", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _reset_metrics():
+    """The counters behind `/metrics` are a process-global singleton, like the
+    limiter below. Without a reset every job the suite runs accumulates into
+    them, so any assertion on an absolute count would depend on test order."""
+    metrics.reset()
 
 
 @pytest.fixture(autouse=True)

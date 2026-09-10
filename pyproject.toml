@@ -9,6 +9,7 @@ dependencies = [
     "httpx>=0.28.1",
     "pydantic>=2",
     "reportlab>=4",
+    "sentry-sdk>=2.0",
     "uvicorn[standard]>=0.51.0",
 ]
 

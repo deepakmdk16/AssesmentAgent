@@ -14,7 +14,7 @@ Priority: **P1** first paying customers hit it · **P2** fix before scale · **P
 Effort: **XS** minutes · **S** self-contained · **M** multi-file · **L** data + API + UI.
 
 **Sequence:** (1) organisation → billing (platform X01 → X02) · (2) privacy and email
-· (3) deploy + ops (A06, A07, X05, X08) · (4) the rest by priority.
+· (3) deploy + ops (A06, A07) · (4) the rest by priority.
 
 ---
 
@@ -309,6 +309,14 @@ already satisfies.**
   INFO. Why: PII in logs without a redaction knob (platform has LOG_PII; agent has
   none). Fix: redact or gate behind an ASSESS_LOG_PII flag.
   _Verified: single-audit claim, not independently re-verified; source: trace._
+  Raised by X08's integration check: X08 built the two exits this takes — an
+  aggregator (`ASSESS_LOG_FORMAT=json`) and Sentry breadcrumbs, which capture
+  INFO records by default — so the same line now leaves the box on two new
+  channels. The platform did the symmetric work (`LOG_PII` gating plus the
+  access-line redaction); this repo has no `LOG_PII` equivalent, which is what
+  makes this the agent's P08. Fix: gate the recipient/candidate log lines the
+  way the platform gates `email_client`.
+
 - **A34 · P3 · XS — /health is a static ok; no readiness signal.**
   Evidence: api.py:283-285 returns {"status":"ok"} unconditionally; no check of
   toolchains/nsjail/LLM reachability. Why: a worker missing nsjail (forced sandbox)

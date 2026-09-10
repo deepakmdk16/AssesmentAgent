@@ -218,6 +218,7 @@ document is served — the table below is the contract.
 | `POST /run/tests` | Candidate's rehearsal: pass/fail per case **only** — never the input/expected/actual. |
 | `POST /questions/draft` | Draft a validated question from a brief ([authoring.py](assessment_agent/authoring.py)). Claude writes the prose, constraints, reference solution and test *inputs*; the runner executes the reference to produce every `expected`. The model never supplies an answer. |
 | `GET /health` | Liveness. The one unauthenticated route. |
+| `GET /metrics` | Prometheus text exposition of this worker's counters (jobs by outcome, in-flight, callback outcomes, grade-latency histogram). Authenticated like everything else; counters are per-process and reset on restart. |
 
 Auth is a shared secret in the `X-Assess-Token` header and is **fail-closed**:
 with `ASSESS_API_TOKEN` unset every route returns 503 unless you explicitly set
