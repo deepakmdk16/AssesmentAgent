@@ -91,6 +91,22 @@ run flags will drift when A07 lands.**
   exists but is permanently red. Fix: set the repo secret (or make the job
   skip-with-notice); run the owed Sonnet baselines and record them.
   _Verified: live run in this audit; source: live._
+- **A22 · P1 (was P2) · S — A cgroup memory kill is indistinguishable from an
+empty-output wrong answer.**
+  Evidence: live /run with a 1 GB allocation: stdout "", timed_out=false,
+  infra_error=null, compile_error=null, duration 0.115 s — no signal that the
+  process was killed; CONVENTIONS §4 requires failure kinds be distinguished (infra
+  vs compile vs TLE vs wrong answer). A06 (546be6d) raised the reachability:
+  sandbox.py now passes --cgroup_mem_swap_max 0, so on any host with swap a
+  submission over the ceiling is killed outright where it used to spill to swap and
+  survive — slowly, and often surfacing as a legible TLE. The silent kill is now the
+  normal path rather than the exceptional one, which is what moves this to P1.
+  Why: interviewer and candidate cannot tell "memory limit exceeded" from "printed
+  nothing", so a candidate is marked wrong for what is really a resource verdict.
+  Fix: detect SIGKILL/exit 137 or read cgroup memory.events → new outcome kind MLE
+  surfaced in report/run output.
+  _Verified: live run in this audit; reachability re-assessed when A06 landed;
+  source: live._
 - **A08 · P2 · XS — Dockerfile production hygiene.**
   Evidence: no HEALTHCHECK (/health exists); base debian:bookworm-slim by tag not
   digest; apt packages unpinned (Dockerfile:38,43-53); uv + nsjail are pinned. Why:
@@ -200,15 +216,6 @@ instead of 401.**
   reaches CandidateRunOut and reports. Why: candidates see sandbox internals (and
   that it runs as root); pollutes stderr comparisons. Fix: pass nsjail --quiet / -l
   <logfile> and keep candidate stderr clean.
-  _Verified: live run in this audit; source: live._
-- **A22 · P2 · S — A cgroup memory kill is indistinguishable from an empty-output
-wrong answer.**
-  Evidence: live /run with a 1 GB allocation: stdout "", timed_out=false,
-  infra_error=null, compile_error=null, duration 0.115 s — no signal that the
-  process was killed; CONVENTIONS §4 requires failure kinds be distinguished (infra
-  vs compile vs TLE vs wrong answer). Why: interviewer and candidate cannot tell
-  "memory limit exceeded" from "printed nothing". Fix: detect SIGKILL/exit 137 or
-  read cgroup memory.events → new outcome kind MLE surfaced in report/run output.
   _Verified: live run in this audit; source: live._
 - **A24 · P2 · XS — LLM surfaces were NOT validated live in this audit (no key;
 local Ollama install is broken).**
