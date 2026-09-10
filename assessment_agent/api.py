@@ -49,6 +49,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
+import logging.config
 import os
 import secrets
 import tempfile
@@ -64,8 +65,10 @@ from urllib.parse import urlparse
 
 import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
+from . import observability
 from .agent import assess, result_from_dict, result_to_dict
 from .authoring import draft_question, draft_question_set, draft_set_to_dict, draft_to_dict
 from .constants import OFFLINE_ENGINE
@@ -81,6 +84,12 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    # Error reporting, when an operator configured a DSN; inert otherwise, so a
+    # dev box and the test suite are untouched. Log formatting deliberately stays
+    # in `main()`: a dictConfig here would also run under the TestClient, which
+    # enters the lifespan, and replacing the root handler mid-suite would silence
+    # pytest's own log capture.
+    observability.init_sentry()
     yield
     # Shutdown: uvicorn has already waited its graceful timeout for in-flight
     # background jobs; whatever is still running will never deliver. Tell the
@@ -100,6 +109,29 @@ app = FastAPI(
     openapi_url=None,
     lifespan=_lifespan,
 )
+
+@app.middleware("http")
+async def _request_context(request: Request, call_next: Any) -> Any:
+    """Give every request a correlation id, in the logs and on the response.
+
+    The worker's first middleware. The id is adopted from the platform's
+    `X-Request-Id` when it sent one, so a grade's log lines sit under the same id
+    as the submission that triggered it on the other side; minted otherwise, so a
+    direct caller still gets correlation.
+
+    Set before the route runs, which is what carries it into the background grade
+    and into the callback posted from there — starlette copies the context into
+    the worker thread.
+    """
+    request_id = observability.adopt_request_id(
+        request.headers.get(observability.REQUEST_ID_HEADER)
+    )
+    # So a Sentry report and the log lines around it share a key.
+    observability.tag_request(request_id)
+    response = await call_next(request)
+    response.headers[observability.REQUEST_ID_HEADER] = request_id
+    return response
+
 
 # Shared-secret auth (see also the platform's callback auth). Bearer tokens in the
 # `X-Assess-Token` header, enforced only when the corresponding env var is set —
@@ -325,6 +357,24 @@ class ReportRequest(BaseModel):
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/metrics", dependencies=[Depends(_require_token)], response_class=PlainTextResponse)
+def metrics() -> str:
+    """Prometheus text exposition of this worker's counters.
+
+    Authenticated like everything else here except `/health`: the worker sets
+    `docs_url=None` precisely so it does not advertise its surface, and job
+    counts and grade latencies are a customer's hiring volume. In the shipped
+    compose stack it is unreachable from the internet anyway — the agent is on
+    the internal `grading` network with no published port — so the token is the
+    guard that survives someone publishing one.
+
+    Counters are per-process and reset on restart; see `observability` for why
+    that is a bounded limitation rather than a bug, and note the platform keeps
+    the durable view of the same jobs.
+    """
+    return observability.metrics.render()
 
 
 @app.post(
@@ -554,6 +604,7 @@ def create_assessment(req: AssessmentRequest, background: BackgroundTasks) -> di
         logger.info("job %s re-sent while in flight; acknowledged again, not re-run", job_id)
         return {"job_id": job_id, "status": "accepted"}
     _record_job(job_id, {"status": "accepted", "result": None, "error": None})
+    observability.metrics.job(observability.JOB_ACCEPTED)
     if req.callback_url:
         _PENDING_CALLBACKS[job_id] = req.callback_url
     logger.info(
@@ -608,16 +659,23 @@ def _run_job(job_id: str, req: AssessmentRequest, question, warnings: list[str])
         if req.email_to:
             payload["email"] = _email_report(result, req.candidate, req.email_to)
         _record_job(job_id, {"status": "done", "result": payload, "error": None})
+        elapsed = time.perf_counter() - started
+        observability.metrics.job(observability.JOB_DONE)
+        # Only a completed grade is timed. A failure's duration says how long the
+        # worker took to give up, which is a different population and would drag
+        # the histogram toward buckets no successful grade occupies.
+        observability.metrics.grade_latency(elapsed)
         logger.info(
             "job %s done in %.1fs: verdict=%s score=%.0f%% quality_engine=%s",
             job_id,
-            time.perf_counter() - started,
+            elapsed,
             result.verdict,
             result.score_pct,
             result.quality_engine,
         )
     except Exception as exc:  # keep the worker alive; record the failure for polling
         _record_job(job_id, {"status": "error", "result": None, "error": str(exc)})
+        observability.metrics.job(observability.JOB_ERROR)
         payload = {"job_id": job_id, "status": "error", "error": str(exc)}
         logger.exception("job %s failed after %.1fs", job_id, time.perf_counter() - started)
 
@@ -647,6 +705,13 @@ def _post_callback(
     """
     tries = max(1, _CALLBACK_ATTEMPTS if attempts is None else attempts)
     headers = {"Content-Type": "application/json"}
+    # Carry the triggering request's id back to the platform, closing the loop
+    # submit -> trigger -> grade -> callback under one id. Absent on the shutdown
+    # flush, which has no request context — sending "-" would be worse than
+    # sending nothing, since the platform would adopt it as a real id.
+    request_id = observability.current_request_id()
+    if request_id != observability.NO_REQUEST_ID:
+        headers[observability.REQUEST_ID_HEADER] = request_id
     token = os.environ.get("CALLBACK_TOKEN")
     if token:
         headers[_AUTH_HEADER] = token
@@ -665,11 +730,13 @@ def _post_callback(
             reason: str = f"{type(exc).__name__}: {exc}"
         else:
             if response.status_code < 400:
+                observability.metrics.callback(observability.CALLBACK_DELIVERED)
                 logger.info("job %s callback delivered (attempt %d)", job_id, attempt)
                 return
             # 4xx is the platform rejecting the payload — retrying sends the same
             # bytes to the same endpoint, so don't. 5xx may be transient.
             if response.status_code < 500:
+                observability.metrics.callback(observability.CALLBACK_REJECTED)
                 logger.error(
                     "job %s callback rejected with %d — not retrying: %s",
                     job_id,
@@ -692,7 +759,14 @@ def _post_callback(
             time.sleep(delay)
         else:
             # Exhausting the normal budget loses a result (ERROR). The one-shot
-            # shutdown budget has the platform's reaper behind it (WARNING).
+            # shutdown budget has the platform's reaper behind it (WARNING) — the
+            # counter splits on the same discriminator, so an alert on "failed"
+            # does not fire for an ordinary deploy.
+            observability.metrics.callback(
+                observability.CALLBACK_FAILED
+                if attempts is None
+                else observability.CALLBACK_REQUEUED
+            )
             logger.log(
                 logging.ERROR if attempts is None else logging.WARNING,
                 "job %s callback FAILED after %d attempt(s) (%s)%s",
@@ -781,12 +855,29 @@ def main() -> None:
     """Entry point for `assess-api` — runs uvicorn."""
     import uvicorn
 
-    logging.basicConfig(
-        level=os.environ.get("ASSESS_LOG_LEVEL", "INFO").upper(),
-        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+    # A dictConfig rather than basicConfig: uvicorn's own loggers set
+    # propagate=False and keep their own format, so a root-only change leaves the
+    # access lines unconverted — and basicConfig is a no-op once a handler
+    # exists. ASSESS_LOG_FORMAT=json emits one JSON object per line for an
+    # aggregator; either format carries the request id.
+    logging.config.dictConfig(
+        observability.logging_config(
+            os.environ.get("ASSESS_LOG_LEVEL", "INFO").upper(),
+            json_format=os.environ.get("ASSESS_LOG_FORMAT", "text").lower() == "json",
+        )
     )
     host = os.environ.get("ASSESS_API_HOST", "127.0.0.1")
     port = int(os.environ.get("ASSESS_API_PORT", "8000"))
     # Bounded graceful stop: wait this long for in-flight grades, then the
     # lifespan hook error-callbacks the rest (see `_flush_pending_callbacks`).
-    uvicorn.run(app, host=host, port=port, timeout_graceful_shutdown=_SHUTDOWN_GRACE_S)
+    # log_config=None or uvicorn re-applies its OWN dictConfig after the one
+    # above, restoring handlers + propagate=False on uvicorn.access and leaving
+    # the access lines plain text with no request id — half a JSON stream, and
+    # the uvicorn entries in `logging_config` silently dead.
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        timeout_graceful_shutdown=_SHUTDOWN_GRACE_S,
+        log_config=None,
+    )

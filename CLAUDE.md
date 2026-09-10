@@ -88,6 +88,12 @@ belongs in the module docstring.
 - `ratelimit.py` — in-process fixed-window rate limiter for the API's
   code-execution / LLM-cost endpoints (`/run`, `/run/tests`, `/assessments`,
   `/questions/draft`).
+- `observability.py` — the operational surface (X08): the `X-Request-Id`
+  contextvar that correlates a grade with the platform request that triggered
+  it, the JSON log format (`ASSESS_LOG_FORMAT=json`), DSN-gated Sentry
+  (`ASSESS_SENTRY_DSN`, scrubbed of candidate code before an event leaves), and
+  the in-process counters behind `GET /metrics`. Counters are per-process on
+  purpose — this worker has no datastore; the platform keeps the durable view.
 - `signing.py` — HMAC-SHA256 body signing/verification for the platform↔agent
   link (mirrored verbatim in the platform repo — kept identical by
   `scripts/checkpoints.sh`, which fails the push on divergence; inbound requests +

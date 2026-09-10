@@ -14,7 +14,7 @@ Priority: **P1** first paying customers hit it · **P2** fix before scale · **P
 Effort: **XS** minutes · **S** self-contained · **M** multi-file · **L** data + API + UI.
 
 **Sequence:** (1) organisation → billing (platform X01 → X02) · (2) privacy and email
-· (3) deploy + ops (A06, A07, X05, X08) · (4) the rest by priority.
+· (3) deploy + ops (A06, A07) · (4) the rest by priority.
 
 ---
 
