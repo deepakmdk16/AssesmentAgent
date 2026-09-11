@@ -1,0 +1,29 @@
+# AppArmor profile for the assessment-agent container
+# (deploy/docker-run.flags: --security-opt=apparmor=assess-nsjail).
+#
+# Why: Ubuntu >= 23.10 sets kernel.apparmor_restrict_unprivileged_userns=1. There,
+# a user namespace created by a process whose profile doesn't grant `userns` is
+# moved into the `unprivileged_userns` profile, which denies it every capability,
+# so nsjail can't build a jail. docker-default doesn't grant userns (and also denies
+# mount), and plain `unconfined` gets that same transition. This profile grants
+# userns and nothing else.
+#
+# Load it on the Docker HOST (it can't ship in the image) before starting the
+# container, and again after any edit:
+#   sudo apparmor_parser -r deploy/apparmor/assess-nsjail
+# To keep it across reboots, copy it into /etc/apparmor.d/.
+#
+# On a host without that restriction (no kernel.apparmor_restrict_unprivileged_userns
+# sysctl, or it is 0), --security-opt=apparmor=unconfined does the same job.
+#
+# To be clear: flags=(unconfined) means this profile confines NOTHING. Its only job
+# is to permit user namespaces. The confinement comes from the other layers: no
+# capabilities after the entrypoint, deploy/seccomp.json, and nsjail's namespaces,
+# cgroups and seccomp policy (assessment_agent/sandbox.py).
+
+abi <abi/4.0>,
+include <tunables/global>
+
+profile assess-nsjail flags=(unconfined) {
+  userns,
+}

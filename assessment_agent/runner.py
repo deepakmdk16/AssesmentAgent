@@ -20,7 +20,8 @@ Security note: this executes untrusted candidate code. Beyond the per-run timeou
 each child gets a best-effort output ceiling (`RLIMIT_FSIZE`) and — for languages
 whose runtime doesn't reserve address space wholesale — a memory ceiling
 (`RLIMIT_AS`); see `_apply_limits` and `Language.address_space_capped`, tune with
-`ASSESS_MEM_LIMIT_MB` / `ASSESS_OUTPUT_LIMIT_MB`. Each child also leads its own
+`ASSESS_MEM_LIMIT_MB` / `ASSESS_OUTPUT_LIMIT_MB` (and, under the sandbox,
+`ASSESS_PIDS_MAX` / `ASSESS_CPU_MS_PER_SEC`). Each child also leads its own
 process group, so a timeout kills the whole tree rather than just the direct
 child and can't leave orphans running on the worker (see `_kill_tree`).
 
@@ -32,18 +33,30 @@ and little else.
 
 On their own these are defense-in-depth, NOT a sandbox: nothing *here* bounds fork
 bombs, network egress, or memory on the runtimes that opt out. That layer lives in
-`sandbox.py`, which wraps each child's argv in nsjail when `ASSESS_SANDBOX` selects
-it (a fresh network namespace, dropped capabilities, and cgroup-v2 memory + pids
-ceilings — the things that can actually express "this submission gets N megabytes /
-M processes", which no rlimit here can). Where no sandbox is configured (macOS/dev,
-the test suite) the wrap is a passthrough and only these rlimits + the killpg
-apply, exactly as before. See `sandbox.py` and the Dockerfile.
+`sandbox.py`, which wraps each child's argv — compile and run — in nsjail when
+`ASSESS_SANDBOX` selects it: a fresh network namespace, no capabilities, a seccomp
+deny-list, cgroup-v2 memory + pids + CPU ceilings (the things that can actually
+express "this submission gets N megabytes / M processes / K cores", which no rlimit
+here can), and a read-only view of the container with the grader's own source,
+other candidates' workdirs, the cgroup tree and the shared writable paths hidden.
+Around the jail, the image runs the worker itself as an unprivileged user with no
+capabilities, so an escape from nsjail lands there rather than as root. Where no
+sandbox is configured (macOS/dev, the test suite) the wrap is a passthrough and only
+these rlimits + the killpg apply, exactly as before.
+
+Known gaps, still open: the compile step has no memory ceiling (by design — see
+`_run_submission_unlocked`); the container still needs CAP_SYS_ADMIN, a custom
+seccomp profile and (on Ubuntu >= 23.10) a host AppArmor profile at start, for its
+entrypoint, so it runs on a VM you control, not a managed container platform; and
+the JVM sizes its default heap from host RAM, not the jail's memory ceiling. The
+jail flags and their reasons are in `sandbox.py`; the container posture is in the
+Dockerfile and deploy/.
 """
 
 from __future__ import annotations
 
+import logging
 import os
-import shutil
 import signal
 import subprocess
 import tempfile
@@ -62,6 +75,8 @@ from .languages import LANGUAGES
 from .questions import TestCase
 from .sandbox import is_active as sandbox_active
 from .sandbox import wrap as sandbox_wrap
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -163,6 +178,11 @@ _OUTPUT_LIMIT_BYTES = int(os.environ.get("ASSESS_OUTPUT_LIMIT_MB", "64")) * 1024
 # pids controller — see sandbox.py); the passthrough path has no way to bound a
 # process tree, which is exactly the gap the sandbox closes. 0 disables.
 _PIDS_MAX = int(os.environ.get("ASSESS_PIDS_MAX", "64"))
+# CPU ceiling, in ms of CPU per wall-clock second: 2000 = two cores' worth. Enforced
+# only under the sandbox (the cgroup cpu controller). Not 1000: that measurably slowed
+# a GC-heavy Go submission, whose collector runs on a spare core, and so would move the
+# performance timing that drives the TLE gate. 0 disables.
+_CPU_MS_PER_SEC = int(os.environ.get("ASSESS_CPU_MS_PER_SEC", "2000"))
 
 
 def _apply_limits(cap_address_space: bool) -> None:
@@ -201,6 +221,7 @@ def _preexec_for(cap_address_space: bool):
     if resource is None:  # non-POSIX
         return None
     return lambda: _apply_limits(cap_address_space)
+
 
 # Give each child its own session/process group so a timeout can kill the whole
 # tree (see `_kill_tree`). POSIX-only, like the rlimits above.
@@ -252,13 +273,18 @@ def _run_case(
     # language including the JVM/Go — the thing RLIMIT_AS could not do — so mem is
     # passed unconditionally, independent of `cap_address_space`. The output cap is
     # handed over too (nsjail's --rlimit_fsize) since it owns the child's limits.
-    exec_cmd = sandbox_wrap(
-        run_cmd,
-        workdir,
-        mem_bytes=_MEM_LIMIT_BYTES,
-        pids_max=_PIDS_MAX,
-        fsize_bytes=_OUTPUT_LIMIT_BYTES,
-    )
+    # Outside the timed region; a runtime missing from the jail's PATH surfaces here.
+    try:
+        exec_cmd = sandbox_wrap(
+            run_cmd,
+            workdir,
+            mem_bytes=_MEM_LIMIT_BYTES,
+            pids_max=_PIDS_MAX,
+            fsize_bytes=_OUTPUT_LIMIT_BYTES,
+            cpu_ms_per_sec=_CPU_MS_PER_SEC,
+        )
+    except FileNotFoundError as exc:
+        return f"runtime not installed: {exc}"
     # Under the sandbox nsjail sets every rlimit itself; adding the runner's preexec
     # caps on top fights it (raising RLIMIT_AS back up hits EPERM). Passthrough keeps
     # the preexec rlimits exactly as before. The process-group kill applies either way.
@@ -376,11 +402,13 @@ def _run_submission_unlocked(
 
         if compile_cmd is not None:
             # Sandbox the compiler too: no network (a source must not fetch deps at
-            # build time) and the pids brake. Memory is left uncapped — compilers
-            # legitimately use a lot and `compile_timeout` already bounds them, so a
-            # cgroup mem cap here would only OOM honest builds.
-            compile_exec = sandbox_wrap(compile_cmd, workdir, pids_max=_PIDS_MAX)
+            # build time), the pids brake and the CPU ceiling. Memory is left uncapped
+            # — compilers legitimately use a lot and `compile_timeout` already bounds
+            # them, so a cgroup mem cap here would only OOM honest builds.
             try:
+                compile_exec = sandbox_wrap(
+                    compile_cmd, workdir, pids_max=_PIDS_MAX, cpu_ms_per_sec=_CPU_MS_PER_SEC
+                )
                 proc = subprocess.run(
                     compile_exec,
                     cwd=workdir,
@@ -422,7 +450,101 @@ def _run_submission_unlocked(
 
         return ExecutionReport(language, None, outcomes)
     finally:
-        shutil.rmtree(workdir, ignore_errors=True)
+        _remove_workdir(workdir)
+
+
+def _remove_workdir(workdir: Path) -> None:
+    """Delete a submission's workdir, even one the child made unreadable.
+
+    The jailed child runs as the worker's own uid (see sandbox.py), so it can chmod
+    its workdir or any subdir to 0, and the worker (no CAP_DAC_OVERRIDE) can't list
+    those. So each directory gets 0700 back before it is listed. Only real
+    directories get that: chmod follows symlinks, and a planted link to a
+    worker-owned path outside the workdir must keep its mode, so links are unlinked,
+    never followed.
+
+    The child picks the tree's shape too, so the walk is iterative and relative to one
+    open directory fd: a path past PATH_MAX fails every path-based call, and a chain
+    deeper than the recursion limit crashes a recursive rmtree. What still can't be
+    removed is counted and logged once, never raised, since cleanup must not turn a
+    grade into an error.
+    """
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    # One level per directory entered below the workdir: its name in its parent, and
+    # the parent's subdirectories still to visit.
+    stack: list[tuple[str, list[str]]] = []
+    failures = 0
+    first: tuple[str, str] | None = None
+
+    def failed(name: str, exc: Exception) -> None:
+        nonlocal failures, first
+        failures += 1
+        if first is None:  # the names are the candidate's: keep one, and bound it
+            rel = "/".join([*(entered for entered, _ in stack), name])
+            reason = exc.strerror if isinstance(exc, OSError) else None
+            first = (rel[-200:], reason or type(exc).__name__)
+
+    def empty(fd: int) -> list[str]:
+        """List `fd` once, unlink every non-directory, return the subdirectories."""
+        try:
+            with os.scandir(fd) as it:
+                entries = list(it)  # unlinking mid-readdir can skip entries on some FSes
+        except OSError as exc:
+            failed(".", exc)
+            return []
+        subdirs = []
+        for entry in entries:
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    subdirs.append(entry.name)
+                else:
+                    os.unlink(entry.name, dir_fd=fd)
+            except OSError as exc:
+                failed(entry.name, exc)
+        return subdirs
+
+    fd = -1
+    try:
+        try:
+            os.chmod(workdir, 0o700)
+            fd = os.open(workdir, flags)
+            todo = empty(fd)
+            while todo or stack:
+                if todo:
+                    name = todo.pop()
+                    try:
+                        # A real directory, and the jail is dead, so nothing can swap
+                        # in a link between the listing and this chmod.
+                        os.chmod(name, 0o700, dir_fd=fd)
+                        child = os.open(name, flags, dir_fd=fd)
+                    except OSError as exc:
+                        failed(name, exc)  # skipped; its parent's rmdir fails too
+                        continue
+                    stack.append((name, todo))
+                    fd, parent = child, fd
+                    os.close(parent)
+                    todo = empty(fd)
+                else:
+                    name, todo = stack.pop()
+                    fd, child = os.open("..", flags, dir_fd=fd), fd
+                    os.close(child)
+                    try:
+                        os.rmdir(name, dir_fd=fd)
+                    except OSError as exc:
+                        failed(name, exc)
+        finally:
+            if fd >= 0:
+                os.close(fd)
+        os.rmdir(workdir)
+    except Exception as exc:  # the workdir itself, or the walk lost its place
+        failed(".", exc)
+    if first is not None:
+        log.warning(
+            "could not remove %d entries of workdir %s; the first: %r (%s)",
+            failures,
+            workdir,
+            *first,
+        )
 
 
 def run_once(

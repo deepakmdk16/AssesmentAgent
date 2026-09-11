@@ -2,26 +2,47 @@
 #
 # Bundles nsjail plus every supported language toolchain and turns the OS sandbox
 # ON by default (ASSESS_SANDBOX=nsjail), so untrusted candidate code runs with no
-# network, dropped capabilities, and cgroup-v2 memory + pids ceilings — the
+# network, dropped capabilities, and cgroup-v2 memory, pids and CPU ceilings — the
 # production gap that the per-child rlimits alone cannot close (see
 # assessment_agent/runner.py and assessment_agent/sandbox.py).
 #
-# RUN (nsjail needs namespace + cgroup privileges — validated with these flags):
+# RUN, from the repo root. The docker run flags live in deploy/docker-run.flags, one
+# per line with its reason. That file is the source of truth, so they aren't
+# restated here:
 #
 #   docker build -t assessment-agent .
-#   docker run --rm --privileged --cgroupns=host -p 8000:8000 assessment-agent
+#   sudo apparmor_parser -r deploy/apparmor/assess-nsjail   # on the host, once per boot
+#   docker run --rm $(grep -Ev '^[[:space:]]*(#|$)' deploy/docker-run.flags) \
+#       -p 8000:8000 assessment-agent
 #
-#   - --cgroupns=host lets nsjail create its cgroup-v2 subtree under the host's
-#     unified hierarchy at /sys/fs/cgroup (nsjail runs with --use_cgroupv2).
-#   - --privileged grants the namespace + cgroup capabilities; CAP_SYS_ADMIN alone
-#     also suffices for a more locked-down deploy. Without them nsjail cannot build
-#     the jail and — with ASSESS_SANDBOX=nsjail — the run fails loudly rather than
-#     executing unsandboxed, which is the intended safety posture.
+# Where `sysctl -n kernel.apparmor_restrict_unprivileged_userns` is absent or 0, skip
+# apparmor_parser and append --security-opt=apparmor=unconfined after the flags (last wins).
+# On Docker Desktop or Colima "the host" is their Linux VM, not macOS: run the sysctl
+# and apparmor_parser there (e.g. `colima ssh -- sudo apparmor_parser -r <abs path>`).
+#
+# Posture: the server, nsjail and the jailed code all run as the unprivileged
+# `assess` user (uid 10001) with no capabilities, no_new_privs and a seccomp filter.
+# nsjail builds each jail from an unprivileged user namespace. Only the entrypoint
+# (deploy/entrypoint.sh) runs as root, and it still needs this from the host:
+#   - CAP_SYS_ADMIN (plus CHOWN, SETUID, SETGID, SETPCAP) at container START, to
+#     delegate the container's private cgroup-v2 namespace to the worker. All of
+#     them are dropped before CMD runs.
+#   - on Ubuntu >= 23.10, the host AppArmor profile deploy/apparmor/assess-nsjail,
+#     because unprivileged user namespaces are AppArmor-restricted there.
+#   - the custom seccomp profile deploy/seccomp.json (Docker's default lacks
+#     pivot_root, which nsjail needs).
+# Without them the entrypoint refuses to start, or nsjail can't build the jail. With
+# ASSESS_SANDBOX=nsjail that fails the run loudly rather than executing unsandboxed,
+# which is the intended safety posture.
+#
+# That still rules out managed container platforms (Cloud Run, Fargate, Fly, Railway,
+# Render): none grants CAP_SYS_ADMIN, a custom seccomp profile or a host AppArmor
+# profile. Run it on a VM you control.
 #
 # tests/test_sandbox_nsjail.py is the check: .github/workflows/sandbox.yml builds this
-# image and runs that suite inside it with these exact flags, where a missing jail is
-# an error rather than a skip (PRs from this repo and push to main; fork PRs cannot
-# have --privileged and are skipped). It still SKIPs on a macOS dev box.
+# image and runs that suite inside it with the flags from deploy/docker-run.flags,
+# where a missing jail is an error rather than a skip (PRs from this repo and push to
+# main; fork PRs are skipped). It still SKIPs on a macOS dev box.
 
 # ---- Stage 1: build nsjail from source (not in Debian stable apt) ----
 FROM debian:bookworm-slim AS nsjail-build
@@ -40,7 +61,8 @@ FROM debian:bookworm-slim
 
 # Language toolchains for every entry in assessment_agent/languages.py:
 # python, javascript(node), ruby, go, java, c(gcc), cpp(g++), rust(rustc).
-# Plus nsjail's shared-library deps (libprotobuf, libnl-route).
+# Plus nsjail's shared-library deps (libprotobuf, libnl-route), and tini: PID 1 after
+# the entrypoint's drop, reaping the jail processes each TLE orphans.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         python3 \
@@ -51,6 +73,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc g++ \
         rustc \
         libprotobuf32 libnl-route-3-200 \
+        tini \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=nsjail-build /nsjail/nsjail /usr/local/bin/nsjail
@@ -75,6 +98,23 @@ ENV ASSESS_SANDBOX=nsjail
 # through `-p 8000:8000` (the documented run command silently failed without
 # this). Override ASSESS_API_HOST/ASSESS_API_PORT at `docker run` if needed.
 ENV ASSESS_API_HOST=0.0.0.0
+
+# Unprivileged worker (A07). The server and everything it spawns (nsjail and the
+# jailed candidate code) run as this uid. A real home gives uv a writable cache. The
+# group is made explicitly because --user-group would pick a system gid (999).
+RUN groupadd --system --gid 10001 assess \
+    && useradd --system --uid 10001 --gid 10001 --create-home --home-dir /home/assess \
+        --shell /usr/sbin/nologin assess
+ENV HOME=/home/assess
+# The venv synced above stays root-owned. Without this, `uv run --frozen --no-dev`
+# re-installs the editable project into it at every start, which as the worker fails
+# with EACCES before serving a single request.
+ENV UV_NO_SYNC=1
+# Runs as root just long enough to delegate the cgroup namespace, then drops to
+# `assess` for good and execs CMD. See the script, and deploy/docker-run.flags for
+# the flags it needs.
+COPY --chmod=0755 deploy/entrypoint.sh /usr/local/bin/assess-entrypoint
+ENTRYPOINT ["/usr/local/bin/assess-entrypoint"]
 
 EXPOSE 8000
 # --frozen --no-dev: run from the venv this image already built. Plain `uv run`
