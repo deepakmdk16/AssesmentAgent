@@ -4,6 +4,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -261,13 +262,39 @@ def test_cleanup_removes_a_locked_chain_longer_than_path_max(tmp_path):
     assert not os.path.lexists(workdir)
 
 
+def _walk_one_frame_per_level(fd: int) -> None:
+    # The shape of shutil.rmtree before 3.12: one Python frame per directory level.
+    with os.scandir(fd) as entries:
+        for entry in entries:
+            if entry.is_dir(follow_symlinks=False):
+                sub = os.open(entry.name, _DIR, dir_fd=fd)
+                try:
+                    _walk_one_frame_per_level(sub)
+                finally:
+                    os.close(sub)
+
+
 def test_cleanup_removes_a_chain_deeper_than_the_recursion_limit(tmp_path):
     # shutil.rmtree recursed once per level on 3.11, so a candidate's 1000+-deep
     # chain raised RecursionError out of run_submission's finally, replacing the report.
+    # The limit is lowered so a short chain crosses it (1500 levels at the default limit
+    # took ~11s). 3.12's rmtree no longer recurses, so a walk with 3.11's shape is the
+    # canary proving the chain is still deep enough to break a recursive cleanup.
     workdir = tmp_path / "assess_deep"
     workdir.mkdir()
-    os.close(_dig(workdir, ["a"] * 1500))
-    runner._remove_workdir(workdir)
+    os.close(_dig(workdir, ["a"] * 300))
+    limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(200)
+    try:
+        top = os.open(workdir, _DIR)
+        try:
+            with pytest.raises(RecursionError):
+                _walk_one_frame_per_level(top)
+        finally:
+            os.close(top)
+        runner._remove_workdir(workdir)
+    finally:
+        sys.setrecursionlimit(limit)
     assert not os.path.lexists(workdir)
 
 

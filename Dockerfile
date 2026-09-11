@@ -61,8 +61,7 @@ FROM debian:bookworm-slim
 
 # Language toolchains for every entry in assessment_agent/languages.py:
 # python, javascript(node), ruby, go, java, c(gcc), cpp(g++), rust(rustc).
-# Plus nsjail's shared-library deps (libprotobuf, libnl-route), and tini: PID 1 after
-# the entrypoint's drop, reaping the jail processes each TLE orphans.
+# Plus nsjail's shared-library deps (libprotobuf, libnl-route).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         python3 \
@@ -73,6 +72,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc g++ \
         rustc \
         libprotobuf32 libnl-route-3-200 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Small, still-changing packages get their own layer, so adding one doesn't
+# rebuild the toolchain layer above (168s on a CI cache miss). tini: PID 1 after
+# the entrypoint's drop, reaping the jail processes each TLE orphans.
+RUN apt-get update && apt-get install -y --no-install-recommends \
         tini \
     && rm -rf /var/lib/apt/lists/*
 
