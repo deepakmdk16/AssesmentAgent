@@ -1,8 +1,12 @@
+import errno
+import logging
 import os
 import shutil
+import stat
 import subprocess
 import time
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -142,7 +146,7 @@ def test_submissions_are_serialised_process_wide():
 
 
 @pytest.mark.skipif(shutil.which("gcc") is None, reason="needs gcc to reach the compile step")
-def test_the_compile_step_is_jailed_with_only_the_pids_ceiling():
+def test_the_compile_step_is_jailed_with_only_the_pids_and_cpu_ceilings():
     """The compile wrap is deliberately unlike the run wrap, and nothing pinned it.
 
     No memory ceiling (compilers legitimately use a lot; `compile_timeout` bounds
@@ -163,9 +167,158 @@ def test_the_compile_step_is_jailed_with_only_the_pids_ceiling():
         run_submission("int main(void){return 0;}\n", "c", (TestCase("t", "", ""),))
 
     assert len(calls) == 2, f"expected a compile wrap then a run wrap, got {calls}"
-    assert calls[0] == {"pids_max": runner._PIDS_MAX}, calls[0]
+    assert calls[0] == {"pids_max": runner._PIDS_MAX, "cpu_ms_per_sec": runner._CPU_MS_PER_SEC}, (
+        calls[0]
+    )
     assert calls[1] == {
         "mem_bytes": runner._MEM_LIMIT_BYTES,
         "pids_max": runner._PIDS_MAX,
         "fsize_bytes": runner._OUTPUT_LIMIT_BYTES,
+        "cpu_ms_per_sec": runner._CPU_MS_PER_SEC,
     }, calls[1]
+
+
+@pytest.mark.parametrize(
+    "language,prefix", [("c", "compiler not installed: "), ("python", "runtime not installed: ")]
+)
+def test_a_toolchain_missing_from_the_jail_path_is_an_infra_error(monkeypatch, language, prefix):
+    # sandbox.wrap raises this when argv[0] isn't on the jail's PATH. Exec'ing the
+    # bare name instead would fail inside the jail and grade as the candidate's error.
+    def missing(argv, workdir, **kw):
+        raise FileNotFoundError(errno.ENOENT, "not on the jail PATH", argv[0])
+
+    monkeypatch.setattr(runner, "sandbox_wrap", missing)
+    report = run_submission("irrelevant\n", language, (tc("", "x"),))
+    assert (report.infra_error or "").startswith(prefix), report.infra_error
+    assert "not on the jail PATH" in report.infra_error
+    assert report.compile_error is None and report.outcomes == []
+
+
+def test_cleanup_removes_a_workdir_the_child_locked_without_chmodding_through_links(tmp_path):
+    """The child is the worker's own uid, so it can chmod its workdir to 0 and leave
+    the unprivileged worker unable to delete it; leftovers would pile up on /tmp.
+    Cleanup restores the modes, but must not chmod through a planted symlink."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep").write_text("k")
+    outside.chmod(0o750)
+    src = (
+        "import os, sys\n"
+        "os.symlink(sys.stdin.read().strip(), 'link')\n"
+        "os.makedirs('d/e')\n"
+        "open('d/f.txt', 'w').write('x')\n"
+        "open('d/e/g.txt', 'w').write('y')\n"
+        "os.chmod('d/e', 0)\n"
+        "os.chmod('d', 0)\n"
+        "print(os.getcwd())\n"
+        "os.chmod('.', 0)\n"
+    )
+    report = run_submission(src, "python", (tc(str(outside), "irrelevant"),))
+    assert report.outcomes[0].error is None, report.outcomes[0].error
+    workdir = Path(report.outcomes[0].actual)
+    assert workdir.name.startswith("assess_"), workdir
+    assert not os.path.lexists(workdir), "the locked workdir outlived the submission"
+    assert stat.S_IMODE(outside.stat().st_mode) == 0o750
+    assert (outside / "keep").read_text() == "k"
+
+
+_DIR = os.O_RDONLY | os.O_DIRECTORY
+
+
+def _dig(top: Path, names: list[str]) -> int:
+    """mkdir a chain under `top` by name, fd-relatively (so the test itself never
+    builds a path past PATH_MAX); return an fd for the deepest directory."""
+    fd = os.open(top, _DIR)
+    for name in names:
+        os.mkdir(name, dir_fd=fd)
+        child = os.open(name, _DIR, dir_fd=fd)
+        os.close(fd)
+        fd = child
+    return fd
+
+
+def test_cleanup_removes_a_locked_chain_longer_than_path_max(tmp_path):
+    """Past PATH_MAX every path-based call fails with ENAMETOOLONG, so a path-based
+    chmod pass never reached the locked leaf, rmtree couldn't list it, and its payload
+    stayed on /tmp for good — +200 MB a submission, live."""
+    workdir = tmp_path / "assess_long"
+    workdir.mkdir()
+    names = ["n" * 250] * 20
+    assert len("/".join(names)) > os.pathconf(workdir, "PC_PATH_MAX")
+    fd = _dig(workdir, names)
+    try:
+        os.mkdir("x", dir_fd=fd)
+        x = os.open("x", _DIR, dir_fd=fd)
+        for i in range(4):
+            f = os.open(f"f{i}", os.O_WRONLY | os.O_CREAT, 0o600, dir_fd=x)
+            os.write(f, b"payload")
+            os.close(f)
+        os.close(x)
+        os.chmod("x", 0, dir_fd=fd)
+    finally:
+        os.close(fd)
+    runner._remove_workdir(workdir)
+    assert not os.path.lexists(workdir)
+
+
+def test_cleanup_removes_a_chain_deeper_than_the_recursion_limit(tmp_path):
+    # shutil.rmtree recursed once per level on 3.11, so a candidate's 1000+-deep
+    # chain raised RecursionError out of run_submission's finally, replacing the report.
+    workdir = tmp_path / "assess_deep"
+    workdir.mkdir()
+    os.close(_dig(workdir, ["a"] * 1500))
+    runner._remove_workdir(workdir)
+    assert not os.path.lexists(workdir)
+
+
+def test_cleanup_lists_each_directory_once(tmp_path):
+    # Linear in the tree: a walk that rescanned a directory after each subdirectory
+    # would be quadratic in a wide one. The bound is generous, to stay unflaky.
+    workdir = tmp_path / "assess_wide"
+    workdir.mkdir()
+    for i in range(20000):
+        (workdir / f"f{i}").touch()
+    for i in range(2000):
+        (workdir / f"d{i}").mkdir()
+    start = time.perf_counter()
+    runner._remove_workdir(workdir)
+    elapsed = time.perf_counter() - start
+    assert not os.path.lexists(workdir)
+    assert elapsed < 15, elapsed
+
+
+@pytest.mark.parametrize("call", ["unlink", "rmdir"])
+def test_cleanup_logs_one_escaped_line_for_what_it_cannot_remove(
+    caplog, monkeypatch, tmp_path, call
+):
+    """One warning per workdir, however many entries fail: a line per entry let a
+    candidate flood the log, with its names verbatim, so a newline forged a line."""
+    workdir = tmp_path / "assess_stuck"
+    workdir.mkdir()
+    stuck = "stuck\nWARNING forged"
+    (workdir / stuck).mkdir() if call == "rmdir" else (workdir / stuck).touch()
+    for i in range(20):
+        (workdir / f"f{i}").touch()
+    real = getattr(os, call)
+
+    def refuse(path, *args, **kwargs):
+        if path == stuck:
+            raise PermissionError(errno.EACCES, "Permission denied", path)
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, call, refuse)
+    with caplog.at_level(logging.WARNING, logger=runner.__name__):
+        runner._remove_workdir(workdir)
+    assert len(caplog.records) == 1, caplog.records
+    line = caplog.records[0].getMessage()
+    # The stuck entry, then the workdir it keeps non-empty.
+    assert "could not remove 2 entries" in line, line
+    assert repr(stuck) in line and "\n" not in line, line
+    assert os.listdir(workdir) == [stuck]
+
+
+def test_cleanup_logs_a_leftover_instead_of_raising(caplog, tmp_path):
+    gone = tmp_path / "assess_gone"  # vanished before cleanup: logged, not raised
+    with caplog.at_level(logging.WARNING, logger=runner.__name__):
+        runner._remove_workdir(gone)
+    assert len(caplog.records) == 1 and str(gone) in caplog.text

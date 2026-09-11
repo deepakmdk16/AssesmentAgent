@@ -61,10 +61,12 @@ belongs in the module docstring.
   submissions are serialised process-wide (`_EXEC_LOCK`); per-child rlimits go
   on via `preexec_fn`, so do **not** wrap it in threads (see its docstring).
 - `sandbox.py` — wraps each untrusted child's argv in an OS sandbox (nsjail:
-  no network, dropped caps, cgroup memory+pids) selected by `ASSESS_SANDBOX`;
-  a no-op passthrough where none is configured (macOS/dev, and the checkpoints CI job). The real
-  isolation layer above `runner.py`'s best-effort rlimits; on by default in the
-  Dockerfile.
+  no network, no caps, seccomp, cgroup memory+pids+cpu, the grader and other
+  workdirs hidden) selected by `ASSESS_SANDBOX`; a no-op passthrough where none is
+  configured (macOS/dev, and the checkpoints CI job). The real isolation layer
+  above `runner.py`'s best-effort rlimits; on by default in the Dockerfile, whose
+  worker runs unprivileged. The container's docker run flags live in
+  `deploy/docker-run.flags` (the one source of truth; CI reads it).
 - `questions.py` — built-in questions + `validate_question` invariants.
 - `loader.py` — validates an interviewer-supplied question JSON (Phase 2).
 - `languages.py` — the per-language compile/run registry.

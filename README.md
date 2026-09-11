@@ -295,11 +295,15 @@ rather than leaving orphans.
 On their own those are defense-in-depth, not a sandbox — they can't bound fork
 bombs, network egress, or memory on the JVM/Go paths. That layer is
 [sandbox.py](assessment_agent/sandbox.py): it wraps each untrusted child in
-**nsjail** (no network, dropped capabilities, cgroup-v2 memory + pids ceilings)
+**nsjail** (no network, no capabilities, a seccomp filter, cgroup-v2 memory, pids
+and CPU ceilings, and the grader's own files and other candidates' workdirs hidden)
 when `ASSESS_SANDBOX` selects it. The [Dockerfile](Dockerfile) bundles nsjail and
-turns it on by default (`ASSESS_SANDBOX=nsjail`), and CI exercises it there; macOS
-and dev boxes fall through to a no-op passthrough (rlimits + killpg only). See runner.py / sandbox.py for the exact
-guarantees and the prod bring-up notes.
+turns it on by default (`ASSESS_SANDBOX=nsjail`), with the server running as an
+unprivileged user; the `docker run` flags that makes possible, and the host
+AppArmor step, are in [deploy/docker-run.flags](deploy/docker-run.flags). CI runs
+the live jail suite under exactly those flags. macOS and dev boxes fall through to
+a no-op passthrough (rlimits + killpg only). See runner.py / sandbox.py for the
+exact guarantees.
 
 Two further boundaries worth knowing:
 

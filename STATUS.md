@@ -14,7 +14,7 @@ Priority: **P1** first paying customers hit it · **P2** fix before scale · **P
 Effort: **XS** minutes · **S** self-contained · **M** multi-file · **L** data + API + UI.
 
 **Sequence:** (1) organisation → billing (platform X01 → X02) · (2) privacy and email
-· (3) deploy + ops (A07) · (4) the rest by priority.
+· (3) the rest by priority.
 
 ---
 
@@ -49,39 +49,6 @@ contradicts the docs.**
   attempts=2, no deadline; api.py:193 count<=8; uvicorn.run (api.py:678) has n.
   _Verified: single-audit claim, not independently re-verified; 2 independent
   refuter(s) confirmed; source: trace._
-- **A07 · P1 · M — Worker runs as root with --privileged; uid remap off; no seccomp;
-no CPU cgroup.**
-  Evidence: Dockerfile has no USER (live: `id -u` = 0 in image); Dockerfile:12-17
-  prescribes --privileged --cgroupns=host; sandbox.py:73-77 jail is
-  root-in-container (nsjail warns at runtime); "CAP_SYS_ADMIN alone suffices" is
-  asserted not validated; STATUS.md:33-37 lists seccomp + CPU cgroup as optional.
-  Why: an nsjail escape is host root; rules out Cloud
-  Run/Fly/Railway/Render/Fargate, needs VMs or privileged k8s pods. Fix: validate +
-  document the minimal cap set; non-root USER with writable temp root; enable uid
-  remap (fix 0700 workdir ownership); add --seccomp_policy and
-  --cgroup_cpu_ms_per_sec; run on dedicated VMs (or gVisor/Firecracker) isolated
-  from the platform DB. Update .github/workflows/sandbox.yml's run flags in the
-  same commit (see A35).
-  _Verified: live run in this audit; source: trace,saas._
-- **A35 · P2 · S — The live jail suite still has four uncovered properties, and its
-run flags will drift when A07 lands.**
-  Evidence: .github/workflows/sandbox.yml proves the memory and pids cgroups,
-  --chroot / read-only, the net namespace, env clearing and the C compile path, but
-  nothing proves (a) that the runner's killpg reaches through nsjail's PID namespace
-  on a TLE — nsjail is our direct child, the payload is pid 1 of a child pidns, so a
-  leaked spinner would still report timed_out=True; (b) --rlimit_fsize live (only the
-  bytes→MB conversion is unit-pinned); (c) that the jailed process cannot READ
-  /app/assessment_agent/questions.py — --chroot / makes the whole container readable,
-  which is a grading-integrity hole, not only a security one; (d) go/rust/cpp/node/
-  ruby in the jail (HOME=<workdir> exists for go's build cache and is untested).
-  Also sandbox.yml hard-codes --privileged --cgroupns=host, duplicating Dockerfile:12
-  with nothing keeping them in sync, and it cannot run on a fork PR (--privileged is
-  root on the runner) — a skipped job satisfies a required status check, so a fork PR
-  weakening the jail flags shows green; only the push-to-main run catches it. Why: A07 changes those flags (non-root USER, uid
-  remap, --cap-add SYS_ADMIN, --seccomp_policy, --cgroup_cpu_ms_per_sec) and the job
-  would keep proving a posture nobody deploys — A06's failure mode one level up.
-  Fix: add the four cases; update sandbox.yml in the same commit as any A07 flag
-  change, or source the flags from one place.
 - **A23 · P1 · XS — The weekly keyed evals workflow has failed every Monday since
 2026-07-27 (secret never set).**
   Evidence: gh run list --workflow evals.yml: 6 consecutive failures on schedule;
@@ -104,14 +71,35 @@ empty-output wrong answer.**
   Why: interviewer and candidate cannot tell "memory limit exceeded" from "printed
   nothing", so a candidate is marked wrong for what is really a resource verdict.
   Fix: detect SIGKILL/exit 137 or read cgroup memory.events → new outcome kind MLE
-  surfaced in report/run output.
+  surfaced in report/run output. Same class: when nsjail itself fails to launch
+  the jail (e.g. clone() EAGAIN once the container's pids cgroup is exhausted), the
+  run is graded as a candidate failure, not infra_error. Don't detect that from
+  stderr — candidate code writes the same stream and could forge it.
   _Verified: live run in this audit; reachability re-assessed when A06 landed;
   source: live._
+- **A36 · P2 · S — The JVM sizes its heap from host RAM, not from the jail's memory
+ceiling.**
+  Evidence: inside the jail `java -XX:+PrintFlagsFinal` reports MaxHeapSize
+  3128950784 (~3 GB on a 12 GB host) under a 512 MB cgroup; a GC-heavy but honest
+  Java solution was cgroup-OOM-killed (exit 137) in 15/15 runs of one probe and 3/4
+  of another, where a correctly sized heap would have collected. Since A07 hides
+  /sys/fs/cgroup from the jail, the JVM cannot discover the ceiling at all. Why: an
+  honest Java submission fails as a memory kill — which A22 makes look like a wrong
+  answer. Fix: size the heap from the runner's own ceiling (e.g. -XX:MaxRAM=<mem>
+  on the java run argv, which the languages registry would need to template), not
+  by re-exposing the cgroup tree.
+  _Verified: live, A07's jail-flags experiment and its independent reproduction._
 - **A08 · P2 · XS — Dockerfile production hygiene.**
   Evidence: no HEALTHCHECK (/health exists); base debian:bookworm-slim by tag not
-  digest; apt packages unpinned (Dockerfile:38,43-53); uv + nsjail are pinned. Why:
-  orchestrators can't detect a wedged worker; builds not reproducible. Fix:
-  HEALTHCHECK CMD curl -f http://127.0.0.1:8000/health; pin base digest.
+  digest (both FROM lines); apt packages unpinned (both apt-get RUN blocks); uv +
+  nsjail are pinned. Why:
+  orchestrators can't detect a wedged worker; builds not reproducible. Fix: a
+  HEALTHCHECK that probes /health as the worker, not as root — the image has no
+  curl, and since A07 a HEALTHCHECK runs outside the entrypoint's privilege drop,
+  i.e. as root holding the container's five capabilities (e.g. `setpriv
+  --reuid=assess --regid=assess --clear-groups --bounding-set=-all --no-new-privs
+  python3 -c <urllib probe>`); pin the base digest; set UV_COMPILE_BYTECODE=1, so a
+  worker that can't write /app stops recompiling its dependencies at every boot.
   Verifier note: refuter confirmed: Accurate: Dockerfile has no HEALTHCHECK; FROM
   debian:bookworm-slim by tag (lines 26,38); apt unpinned (27-31, 43-53); uv pinned
   (58), nsjail tag 3.4 (33). /health exists (api.py:283). No compose/k8s/C.
@@ -143,8 +131,9 @@ blocks legitimate VPC callbacks.**
   _Verified: cited lines read in this audit; 1 independent refuter(s) confirmed;
   source: trace,saas._
 - **A11 · P2 · XS — Compile step lacks the process-group kill.**
-  Evidence: runner.py:349-363 uses subprocess.run(..., timeout=) without
-  start_new_session/_kill_tree, unlike _run_case (runner.py:266-281). Why: a
+  Evidence: the compile step in `_run_submission_unlocked` uses
+  subprocess.run(..., timeout=) without start_new_session/_kill_tree, unlike
+  `_run_case`'s Popen. Why: a
   gcc/javac timeout kills only the direct child on passthrough → orphaned cc1/JVM
   processes. Fix: route compile through the same Popen + _kill_tree path.
   _Verified: cited lines read in this audit; source: trace._
@@ -169,12 +158,6 @@ global limit across tenants.**
   stalls grading for everyone. Fix: lower the cap or bound concurrent executions
   with the semaphore from A03.
   _Verified: single-audit claim, not independently re-verified; source: trace._
-- **A15 · P2 · S — Other candidates' workdirs are readable inside the jail.**
-  Evidence: sandbox.py:100-103 chroots to / read-only with the jail as root
-  (sandbox.py:73-77); every /tmp/assess_* workdir (runner.py:340, mode 0700 root) of
-  a concurrently running submission is readable. Why: cross-candidate source
-  disclosure. Fix: bind a private tmpfs over /tmp exposing only the own workdir, or
-  run each jail under a distinct uid.
   _Verified: single-audit claim, not independently re-verified; source: trace._
 - **A16 · P2 · XS — assess-eval exits 0 and counts a failed judge as a real model
 when the LLM is unavailable.**
@@ -210,13 +193,6 @@ instead of 401.**
   yields 500 vs 401 for ASCII. Both h11 and httptools accept obs-text header.
   _Verified: single-audit claim, not independently re-verified; 1 independent
   refuter(s) confirmed; source: trace._
-- **A21 · P2 · XS — nsjail's own warnings leak into candidate-visible stderr.**
-  Evidence: live /run in the privileged image: stderr = "[W]…logParams():313 Process
-  will be UID/EUID=0 in the global user namespace…" for a memory-killed run; this
-  reaches CandidateRunOut and reports. Why: candidates see sandbox internals (and
-  that it runs as root); pollutes stderr comparisons. Fix: pass nsjail --quiet / -l
-  <logfile> and keep candidate stderr clean.
-  _Verified: live run in this audit; source: live._
 - **A24 · P2 · XS — LLM surfaces were NOT validated live in this audit (no key;
 local Ollama install is broken).**
   Evidence: the Ollama server on this machine answers /api/tags but every chat 500s:
@@ -329,21 +305,63 @@ already satisfies.**
   makes this the agent's P08. Fix: gate the recipient/candidate log lines the
   way the platform gates `email_client`.
 
-- **A34 · P3 · XS — /health is a static ok; no readiness signal.**
-  Evidence: api.py:283-285 returns {"status":"ok"} unconditionally; no check of
-  toolchains/nsjail/LLM reachability. Why: a worker missing nsjail (forced sandbox)
-  reports healthy and then fails every run. Fix: readiness that verifies sandbox
-  availability when ASSESS_SANDBOX=nsjail.
+- **A34 · P2 (was P3) · S — Nothing checks that a jail can actually be built; /health
+is a static ok.**
+  Evidence: api.py's /health returns {"status":"ok"} unconditionally; no check of
+  toolchains/nsjail/LLM reachability. Since A07 the jail also depends on host
+  settings: with AGENT_APPARMOR_PROFILE=unconfined on a host that restricts user
+  namespaces, or a seccomp profile without pivot_root, every entrypoint check
+  passes, /health says ok, and each nsjail launch fails with its own log as the
+  program's stderr — graded as a candidate FAIL or compile error, not ERROR. Why: a
+  misconfigured deploy silently fails every candidate. Fix: at startup, when
+  ASSESS_SANDBOX=nsjail, run one trivial jailed command and refuse to start if it
+  fails; expose the same check as readiness.
   _Verified: cited lines read in this audit; source: saas._
+- **A35 · P3 · XS — The live jail suite cannot gate a fork PR.**
+  Evidence: .github/workflows/sandbox.yml skips pull_request events from forks, and
+  a skipped job satisfies a required status check — so a fork PR that weakens
+  sandbox.py, deploy/ or the Dockerfile shows green; only the push-to-main run
+  catches it. The guard doesn't stop a hostile fork either, since a PR's workflow
+  YAML comes from the PR itself. Why: outside contributions get the boundary checked
+  only after merge. Fix: have a maintainer re-run such a PR from a branch in this
+  repo before merging, and say so in the PR template.
+- **A37 · P3 · XS — A timed-out run leaks an empty NSJAIL.<pid> cgroup.**
+  Evidence: the runner's killpg SIGKILLs nsjail before it can rmdir its cgroup, so
+  every TLE leaves a populated=0 NSJAIL.<pid> under the container's delegated cgroup
+  root (before A07 they landed at the VM's root cgroup, where a same-pid job in
+  another container could adopt one). Why: dying cgroups accumulate for the life of
+  the container. Fix: when the sandbox is active, after `_kill_tree` sweep
+  <cgroupv2_mount>/NSJAIL.* with a best-effort rmdir each — not NSJAIL.<proc.pid>,
+  since the directory is named after nsjail's child, not nsjail. rmdir refuses a
+  populated cgroup (EBUSY), and `_EXEC_LOCK` means no other jail is running.
+  _Verified: live, A07's jail-flags experiment._
+- **A38 · P3 · XS — `docker stop` exits 1 after a clean shutdown.**
+  Evidence: the logs end "Application shutdown complete." / "Finished server
+  process", then ExitCode=1 (OOMKilled=false) — on main's image as well as A07's, so
+  it comes from `uv run`'s signal handling or uvicorn's exit status, not the
+  entrypoint. Why: anything that reads a stopped container's exit code (alerting,
+  a supervisor) sees every deploy as a crash. Fix: find which process returns 1; if
+  it is uv, exec /app/.venv/bin/assess-api directly in CMD.
+  _Verified: live, A07's posture and integration runs._
+- **A39 · P3 · XS — Cleaning up a huge workdir holds the process-wide `_EXEC_LOCK`.**
+  Evidence: `_remove_workdir` runs in `_run_submission_unlocked`'s finally, inside
+  the lock. A candidate that spends its whole run creating empty files leaves a flat
+  directory whose unlinking took 6.2 s after a 2 s run, and every other grade and
+  Run waits behind it. Not new: root's rmtree was just as O(n) under the same lock.
+  Why: one submission can stall grading for everyone for seconds at a time. Fix:
+  release the lock before cleanup (the mkdtemp path is unique to the run), e.g. by
+  handing the workdir to a background reaper.
+  _Verified: live, A07's attack pass._
 
 ---
 
 ## Backlog — unscheduled
 
-- **Sandbox hardening.** A seccomp-bpf syscall filter and per-run cgroup CPU limits
-  (CPU is bounded only by the wall-clock timeout today). The uid remap stays off —
-  the jail runs as root-in-container and the container is the outer boundary.
-  Tracked as A07; don't duplicate it here.
+- **Managed container platforms.** The worker is unprivileged, but the container
+  still needs CAP_SYS_ADMIN at start, a custom seccomp profile and (Ubuntu >= 23.10)
+  a host AppArmor profile, so Cloud Run/Fargate-class hosts stay ruled out. The way
+  in would be host-side cgroup delegation (systemd `Delegate=`) plus a gVisor or
+  Firecracker runtime. Unscoped.
 - **Spec precision in drafted questions.** The oracle cross-check catches a *wrong*
   reference, not an *underspecified* one. Measured across 5 hard briefs: 0/5 drafts
   mentioned integer overflow, and neither ambiguous brief pinned its ambiguity. A
