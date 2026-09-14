@@ -170,7 +170,8 @@ Feature *history* is `git log` (commits are per-slice and detailed), not a
 changelog file. **Pre-push checkpoint #5 applies to STATUS.md:** update it in the
 same commit that opens or closes an item.
 
-Starting a fresh session? STATUS.md's first item is the recommended next task.
+Starting a fresh session? Read STATUS.md's pointer section first — the order of
+work lives in the untracked plan files it names, not in this file's ordering.
 
 ## Phase 2 (delivery paths)
 

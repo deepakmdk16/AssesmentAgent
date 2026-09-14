@@ -13,8 +13,26 @@ Organisation, billing, privacy and deploy epics live in
 Priority: **P1** first paying customers hit it · **P2** fix before scale · **P3** polish.
 Effort: **XS** minutes · **S** self-contained · **M** multi-file · **L** data + API + UI.
 
-**Sequence:** (1) organisation → billing (platform X01 → X02) · (2) privacy and email
-· (3) the rest by priority.
+**Order of work lives in one place: the plan file** (below), not here — the
+sequence line this file used to carry named work that merged on 2026-09-07.
+
+## Where the open work is listed (read this first)
+
+Two working documents live **outside git**, two directories up, and are
+deliberately untracked (`.git/info/exclude`):
+
+- `../PRODUCT-AUDIT-2026-09-14.md` — re-audit at agent `878d265` / platform
+  `f07f80b`: **164 findings** in an `R2-nnn` namespace, none duplicating this
+  file. Agent-side ones are section F (grading correctness, languages, sandbox),
+  plus the contract items in section A. Raw reports in
+  `../audit-2026-09-14-reports/`.
+- `../AUDIT-SESSIONS-2026-09-14.md` — those bucketed into sessions **S00–S30**;
+  **S00 installs the mechanical gates and comes first**. The agent's own sessions
+  are S03 (languages: `-lm`, optimisation, Go compile step, `LANG`, Java package,
+  pinned toolchains), S11 (authoring gates) and S12 (judge hygiene).
+
+Working rule for any item: **make the feature work end to end, then the UI, then
+scale** — open for extension, closed for modification.
 
 ---
 
