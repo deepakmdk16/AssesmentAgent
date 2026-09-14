@@ -20,9 +20,10 @@ A single question with:
   candidate and your reference then disagree on it, and the grader marks a correct
   submission wrong. If a rule is not in the prompt, it does not exist.
   **Output ONLY the final, clean statement.** Do **not** include a worked example
-  — the grader appends a *verified* one automatically from your first correctness
-  input (whose answer it computes by running your reference), so any example you
-  write here would be an un-checked duplicate. Do **not** include any reasoning,
+  — the grader derives a *verified* one automatically from your first correctness
+  input (whose answer it computes by running your reference) and carries it in a
+  separate field that every reader renders beside the statement, so any example
+  you write here is both un-checked and a duplicate. Do **not** include any reasoning,
   tracing, step-by-step derivation, or self-correction ("wait, let me trace…",
   "actually…", "let me fix the example") — reason silently and emit only the
   finished prompt.
