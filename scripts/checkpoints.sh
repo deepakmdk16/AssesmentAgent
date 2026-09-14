@@ -30,10 +30,20 @@ fi
 # workspace (CI checks it out there — Actions cannot check out above it). Empty
 # when it isn't present at all, and every cross-repo check below then skips with
 # a notice rather than failing.
+#
+# Except in CI, which is the thing responsible for making it present: there
+# REQUIRE_COMPANION_REPO=1 turns "absent" into a failure. Without that, a renamed
+# path or a failed checkout would put every cross-repo gate back to a silent skip
+# that exits 0 — the exact failure mode they were written to end.
 _companion=""
 for _c in ../assessment-platform ./assessment-platform; do
   if [ -d "$_c/assessment_platform" ]; then _companion="$_c"; break; fi
 done
+
+if [ -z "$_companion" ] && [ "${REQUIRE_COMPANION_REPO:-0}" = "1" ]; then
+  echo "❌ REQUIRE_COMPANION_REPO=1 but the companion platform repo is not checked out"
+  echo "   beside this one or inside the workspace — every cross-repo gate would skip."; exit 1
+fi
 
 echo "==> signing.py parity (cross-repo)"
 # signing.py is mirrored byte-for-byte in the companion repo; if the two diverge,
