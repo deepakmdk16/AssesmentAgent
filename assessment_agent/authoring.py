@@ -729,19 +729,18 @@ def _check_set_parity(questions: list[dict], warnings: list[str]) -> None:
 def _to_loader_dict(spec: DraftSpec, cases: list[TestCase], example: tuple[str, str]) -> dict:
     """Serialize to the exact JSON shape loader.question_from_dict accepts.
 
-    `example` is the oracle-derived worked example (input, output). It is appended
-    to the prompt as a clean Input/Output block — the model is instructed not to
-    embed one — and also stored in the structured `example` field.
+    `example` is the oracle-derived worked example (input, output) and lives in
+    the structured `example` field ONLY. It used to be appended to the prompt as
+    an Input/Output block as well, which every consumer then rendered twice —
+    the platform's candidate page under its INPUT/OUTPUT tile, `report.py` under
+    its example box, `adversarial.py` under its WORKED EXAMPLE section (U10).
+    Consumers that want it read the field; the prompt is the statement alone.
     """
     ex_in, ex_out = example
-    prompt = (
-        f"{spec.prompt.rstrip()}\n\n"
-        f"Example:\nInput:\n{ex_in.rstrip()}\nOutput:\n{ex_out.rstrip()}\n"
-    )
     data: dict = {
         "id": spec.id,
         "title": spec.title,
-        "prompt": prompt,
+        "prompt": spec.prompt.rstrip(),
         "constraints": spec.constraints,
         "test_cases": [
             {

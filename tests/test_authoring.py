@@ -111,9 +111,12 @@ def test_build_fills_expected_and_validates():
     assert by_name["performance_large"]["expected"] == str(PERF_SUM)
     assert by_name["performance_large"]["category"] == "performance"
     # The worked example is ORACLE-derived from the first correctness case — its
-    # executed output, never a model-written answer — and appended to the prompt.
+    # executed output, never a model-written answer — and lives in the structured
+    # field ONLY: appending it to the prompt too made every reader show it twice
+    # (U10), so the prompt is the model's statement verbatim.
     assert q["example"] == {"input": "3\n1 2 3\n", "output": "6"}
-    assert "Example:" in q["prompt"] and q["prompt"].rstrip().endswith("6")
+    assert "Example:" not in q["prompt"]
+    assert q["prompt"] == "Read N then N integers; print their sum."
     # The drafted JSON round-trips through the same loader the intake uses...
     question, _ = question_from_dict(q)
     # ...and grades a correct submission to PASS.
@@ -140,7 +143,7 @@ def test_example_uses_first_surviving_case_with_oracle_output():
     )
     assert result.question is not None, result.warnings
     assert result.question["example"] == {"input": "2\n10 20\n", "output": "30"}
-    assert "Example:" in result.question["prompt"]
+    assert "Example:" not in result.question["prompt"]
 
 
 def test_reference_crash_drops_that_case():
