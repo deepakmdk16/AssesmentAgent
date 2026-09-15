@@ -48,6 +48,12 @@ def test_managed_runtimes_are_exempt_from_the_address_space_cap(name, monkeypatc
     where it cost a green CI run: java compiled fine, then every case died at VM
     init in 9ms with exit 1. Assert the routing here, since the failure itself
     can't be reproduced on a dev Mac.
+
+    Node joined them in S03, for the same reason and found the same way: V8 asks
+    for a multi-GB pointer-compression cage, so under the cap it aborts with
+    "Failed to reserve virtual memory for CodeRange" before running a line. It had
+    always been capped; nothing executed JavaScript through the runner on Linux
+    until the language smoke suite did.
     """
     attempted = []
     monkeypatch.setattr(
@@ -57,7 +63,7 @@ def test_managed_runtimes_are_exempt_from_the_address_space_cap(name, monkeypatc
 
     # Everyone gets the output cap; only the managed runtimes skip the AS cap.
     assert runner.resource.RLIMIT_FSIZE in attempted
-    expect_as = name not in {"java", "go"}
+    expect_as = name not in {"java", "go", "javascript"}
     assert (runner.resource.RLIMIT_AS in attempted) is expect_as
     assert LANGUAGES[name].address_space_capped is expect_as
 

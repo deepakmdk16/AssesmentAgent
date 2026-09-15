@@ -80,11 +80,17 @@ LANGUAGES: dict[str, Language] = {
         time_multiplier=3.0,
         version=("python3", "--version"),
     ),
+    # Node is a managed runtime like the JVM and Go below: V8 reserves a large
+    # virtual cage at startup (pointer compression asks for GBs) and touches almost
+    # none of it, so RLIMIT_AS does not bound its memory — it stops it booting with
+    # "Failed to reserve virtual memory for CodeRange". S03's smoke test is what
+    # surfaced it, on x86_64 CI; the same failure reproduces on arm64 at a 256 MB cap.
     "javascript": Language(
         "javascript",
         "main.js",
         ["node", "main.js"],
         time_multiplier=2.0,
+        address_space_capped=False,
         version=("node", "--version"),
     ),
     "ruby": Language(
