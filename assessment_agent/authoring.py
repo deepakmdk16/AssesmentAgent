@@ -54,6 +54,20 @@ _PERFORMANCE_WEIGHT = 6.0
 # gets generous headroom rather than the candidate-facing per-case time limit.
 _GEN_TIME_LIMIT_S = 15.0
 
+# R2-026: the performance generator is a model-written program and nothing bounds
+# what it prints — three drafted dev questions reached 7.7-10.1 MB. These mirror
+# the platform's own `TestCaseIn.stdin` / `TestCaseIn.expected` caps
+# (assessment_platform/schemas.py): a case over them cannot be stored at all, and
+# before the result callback carried an excerpt the grade for one was 413'd and
+# lost (R2-001). Reject at drafting, where an interviewer is still there to be
+# told, rather than at intake where only the candidate pays.
+PERF_INPUT_MAX_BYTES = 512 * 1024
+PERF_EXPECTED_MAX_BYTES = 64 * 1024
+# And the platform's `QuestionCreate.test_cases` cap. A draft over it is refused
+# by the platform's schema, which reaches the interviewer as a failed draft they
+# were charged for — one short of it here leaves room for the performance case.
+MAX_DRAFT_CASES = 25
+
 # Just off greedy for the local provider — see `_draft_spec_ollama`. Matches the
 # adversarial probe's setting; the Claude path is unaffected.
 _OLLAMA_TEMPERATURE = 0.3
@@ -418,6 +432,16 @@ def build_from_spec(
             warnings.append(f"Dropped case {ci.name!r}: reference solution errored: {o.error}")
         elif o.actual == "":
             warnings.append(f"Dropped case {ci.name!r}: reference produced empty output.")
+        elif len(o.actual.encode()) > PERF_EXPECTED_MAX_BYTES:
+            warnings.append(
+                f"Dropped case {ci.name!r}: reference produced {len(o.actual.encode()):,} bytes "
+                f"of expected output, over the {PERF_EXPECTED_MAX_BYTES:,}-byte cap."
+            )
+        elif len(kept) >= MAX_DRAFT_CASES - 1:
+            warnings.append(
+                f"Dropped case {ci.name!r}: a question carries at most {MAX_DRAFT_CASES} cases, "
+                "and one is reserved for the performance case."
+            )
         else:
             kept.append(TestCase(ci.name, ci.stdin, o.actual, CORRECTNESS, _CORRECTNESS_WEIGHT))
 
@@ -554,6 +578,13 @@ def _build_performance_case(spec: DraftSpec, warnings: list[str]) -> TestCase | 
         )
         return None
     perf_stdin = gen.actual + "\n"
+    if len(perf_stdin.encode()) > PERF_INPUT_MAX_BYTES:
+        warnings.append(
+            f"Performance generator produced an input of {len(perf_stdin.encode()):,} bytes, "
+            f"too large to store (cap {PERF_INPUT_MAX_BYTES:,}); have it emit a smaller "
+            "constraint-sized input."
+        )
+        return None
 
     # The reference is the intended-optimal solution, so it must clear the case's
     # own time limit; if it can't, the limit is too tight or the input too large.
@@ -569,6 +600,12 @@ def _build_performance_case(spec: DraftSpec, warnings: list[str]) -> TestCase | 
         if ref is not None:
             reason = "timed out" if ref.timed_out else (ref.error or "empty output")
         warnings.append(f"Reference solution failed on the generated performance input: {reason}")
+        return None
+    if len(ref.actual.encode()) > PERF_EXPECTED_MAX_BYTES:
+        warnings.append(
+            f"Reference produced an expected output of {len(ref.actual.encode()):,} bytes on the "
+            f"performance input, too large to store (cap {PERF_EXPECTED_MAX_BYTES:,})."
+        )
         return None
     return TestCase("performance_large", perf_stdin, ref.actual, PERFORMANCE, _PERFORMANCE_WEIGHT)
 
