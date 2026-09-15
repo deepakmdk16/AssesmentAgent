@@ -363,8 +363,11 @@ def test_all_tle_is_not_an_execution_failure():
     assert report.execution_failed is False
     crashed = runner.TestOutcome("t", "", "x", "", False, "Traceback ...")
     assert runner.ExecutionReport("python", None, [crashed, crashed]).execution_failed is True
-    # One crash among TLEs is still a running program.
-    assert runner.ExecutionReport("python", None, [tle, crashed]).execution_failed is False
+    # But a crash among the TLEs still did not execute meaningfully: the verdict is a
+    # decided FAIL either way, and judging it would buy a live LLM call per grade.
+    assert runner.ExecutionReport("python", None, [tle, crashed]).execution_failed is True
+    passing = runner.TestOutcome("t", "", "x", "x", True)
+    assert runner.ExecutionReport("python", None, [tle, passing]).execution_failed is False
 
 
 @pytest.mark.parametrize("host_locale", [{}, {"LC_ALL": "C", "LC_CTYPE": "C"}])

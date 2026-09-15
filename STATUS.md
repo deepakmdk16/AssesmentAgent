@@ -84,6 +84,24 @@ scale** — open for extension, closed for modification.
   that, and the failure is a compile error the candidate sees at once, not a silent
   wrong answer. A real fix is `javac -d . *.java` plus reading the emitted class
   tree, which is a bigger change than the risk warrants.
+- **P2 · XS — Nothing keeps the three language lists in step.**
+  `languages.py::LANGUAGES` is authoritative and now also decides what
+  `GET /toolchains` returns, but the platform mirrors it by hand in
+  `config.py::SUPPORTED_LANGUAGES` and again in `web/src/types.ts::LANGUAGES`, with
+  no gate. Adding or removing a language here silently offers a candidate one the
+  agent will 400. The platform's parity harness already imports this repo
+  (`tests/test_agent_contract_parity.py`), so the fix is a set equality there —
+  it belongs to a platform session, with this repo as the side it reads.
+- **P3 · XS — `sandbox.py::child_env` is the place to filter the child's
+  environment, and it does not.**
+  In passthrough it hands the untrusted child the worker's whole environment —
+  `ANTHROPIC_API_KEY`, `ASSESS_API_TOKEN`, `ASSESS_SIGNING_SECRET` — which a
+  submission can print to stdout, into `actual`, into the stored result and the
+  interviewer's page. Not a regression: before S03 the child inherited exactly the
+  same environment implicitly, because no `env` was passed. But S03 made this the
+  one named construction point, so the allowlist belongs here. Under nsjail the
+  jail already clears everything and sets only PATH, HOME and LANG, so the exposure
+  is passthrough-only (a dev box, or a deploy where nsjail is missing).
 - **P3 · XS — The smoke programs pin one idiom per language by hand.**
   `tests/test_lang_smoke.py::SMOKE` names the minimum version each program needs,
   and `test_the_pin_is_at_least_what_each_program_needs` keeps the pin above it.
@@ -208,7 +226,8 @@ blocks legitimate VPC callbacks.**
 - **A11 · P2 · XS — Compile step lacks the process-group kill.**
   Evidence: the compile step in `_run_submission_unlocked` uses
   subprocess.run(..., timeout=) without start_new_session/_kill_tree, unlike
-  `_run_case`'s Popen. Why: a
+  `_run_case`'s Popen (since S03 `go build` reaches this too, and it forks its own
+  compile/link tools). Why: a
   gcc/javac timeout kills only the direct child on passthrough → orphaned cc1/JVM
   processes. Fix: route compile through the same Popen + _kill_tree path.
   _Verified: cited lines read in this audit; source: trace._

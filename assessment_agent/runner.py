@@ -138,14 +138,18 @@ class ExecutionReport:
         """True when the submission could not be run meaningfully: it did not
         compile, the toolchain was missing, or every test case errored at
         runtime. A wrong-but-running or correct-but-slow (TLE) submission is NOT
-        a failure here — those still merit a quality report. A TLE carries an
-        `error` string too, so it is excluded by name (audit R2-096: an all-TLE
-        submission was classed "did not execute")."""
+        a failure here — those still merit a quality report.
+
+        A TLE carries an `error` string like a crash does, which is what classed an
+        all-TLE submission as "did not execute" (audit R2-096). So the TLE case is
+        excluded by name — but only when it is the whole story. A submission that
+        crashes on most cases and times out on one did not execute meaningfully, and
+        judging it would spend a live LLM call per grade on a decided FAIL."""
         if self.compile_error is not None or self.infra_error is not None:
             return True
-        return bool(self.outcomes) and all(
-            o.error is not None and not o.timed_out for o in self.outcomes
-        )
+        if not self.outcomes or any(o.error is None for o in self.outcomes):
+            return False
+        return not all(o.timed_out for o in self.outcomes)
 
     def by_category(self, category: Category) -> list[TestOutcome]:
         return [o for o in self.outcomes if o.category == category]

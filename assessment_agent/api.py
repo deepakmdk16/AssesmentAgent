@@ -281,6 +281,10 @@ def _replace_lone_surrogates(value: Any) -> Any:
     Recursive because the surrogate does not have to be in `code`: a question's
     `stdin` or `expected` reaches `tc.stdin.encode()` in the runner just the same,
     where it is an ERROR callback rather than a grade.
+
+    Values only, not dict keys: every consumer reads named keys and none
+    re-serialises the caller's dict, so a key cannot reach an encode today. Sanitise
+    keys too if that changes.
     """
     if isinstance(value, str):
         return _LONE_SURROGATE.sub("�", value)
