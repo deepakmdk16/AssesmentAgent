@@ -118,6 +118,9 @@ def test_nsjail_injects_path_and_home_without_leaking_host_env(monkeypatch):
     envs = [cmd[i + 1] for i, a in enumerate(cmd) if a == "--env"]
     assert any(e.startswith("PATH=") for e in envs)
     assert f"HOME={WORKDIR}" in envs
+    # R2-093: with no LANG the JVM (and Ruby) decode/encode as ASCII and any answer
+    # containing non-ASCII is "wrong"; the image sets none, so the jail must.
+    assert f"LANG={sandbox.CHILD_LOCALE}" in envs
     assert "--keep_env" not in cmd  # host env (incl. secrets) stays out of the jail
 
 

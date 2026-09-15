@@ -38,6 +38,13 @@ class Language:
     # returns (source_filename, compile, run) derived from the submission; the
     # runner calls it uniformly so it never needs to special-case a language.
     resolve: Callable[[str], tuple[str, list[str] | None, list[str]]] | None = None
+    # argv that prints the toolchain's version — the binary the candidate's code is
+    # compiled (or, interpreted, run) with. toolchains.py normalises the output and
+    # diffs it against the pin in toolchains.txt (audit R2-105).
+    version: tuple[str, ...] = ()
+
+
+_JAVA_COMMENT = re.compile(r"//[^\n]*|/\*.*?\*/", re.S)
 
 
 def _java_entrypoint(source: str) -> str:
@@ -49,36 +56,100 @@ def _java_entrypoint(source: str) -> str:
 
 
 def _java_resolve(source: str) -> tuple[str, list[str], list[str]]:
-    cls = _java_entrypoint(source)
-    return f"{cls}.java", ["javac", f"{cls}.java"], ["java", cls]
+    """File, compile and run argv for a Java source.
+
+    A `package` declaration (audit R2-094) used to make every case a runtime error:
+    the class was compiled beside the source but had to be launched by its
+    qualified name from the package root. `javac -d .` writes the class under
+    `a/b/Cls.class` for `package a.b` — and plainly `./Cls.class` without one —
+    so the launch is uniform: the qualified name on a classpath of the workdir.
+    Comments are stripped first so a `// package ...` note cannot redirect it.
+    """
+    code = _JAVA_COMMENT.sub("", source)
+    cls = _java_entrypoint(code)
+    pkg = re.search(r"^\s*package\s+([\w.]+)\s*;", code, re.M)
+    qualified = f"{pkg.group(1)}.{cls}" if pkg else cls
+    return f"{cls}.java", ["javac", "-d", ".", f"{cls}.java"], ["java", "-cp", ".", qualified]
 
 
 LANGUAGES: dict[str, Language] = {
-    "python": Language("python", "main.py", ["python3", "main.py"], time_multiplier=3.0),
-    "javascript": Language("javascript", "main.js", ["node", "main.js"], time_multiplier=2.0),
-    "ruby": Language("ruby", "main.rb", ["ruby", "main.rb"], time_multiplier=3.0),
-    # `go run` compiles *and* runs, and the Go runtime reserves large virtual
-    # arenas up front — same address-space story as the JVM below.
+    "python": Language(
+        "python",
+        "main.py",
+        ["python3", "main.py"],
+        time_multiplier=3.0,
+        version=("python3", "--version"),
+    ),
+    # Node is a managed runtime like the JVM and Go below: V8 reserves a large
+    # virtual cage at startup (pointer compression asks for GBs) and touches almost
+    # none of it, so RLIMIT_AS does not bound its memory — it stops it booting with
+    # "Failed to reserve virtual memory for CodeRange". S03's smoke test is what
+    # surfaced it, on x86_64 CI; the same failure reproduces on arm64 at a 256 MB cap.
+    "javascript": Language(
+        "javascript",
+        "main.js",
+        ["node", "main.js"],
+        time_multiplier=2.0,
+        address_space_capped=False,
+        version=("node", "--version"),
+    ),
+    "ruby": Language(
+        "ruby", "main.rb", ["ruby", "main.rb"], time_multiplier=3.0, version=("ruby", "--version")
+    ),
+    # A real compile step (audit R2-092): `go run` per case rebuilt inside the run
+    # cgroup and the first case's time limit, and reported a compile error as a
+    # runtime error on every case. The Go runtime reserves large virtual arenas up
+    # front — same address-space story as the JVM below.
     "go": Language(
         "go",
         "main.go",
-        ["go", "run", "main.go"],
+        ["./program"],
+        ["go", "build", "-o", "program", "main.go"],
         time_multiplier=2.0,
         address_space_capped=False,
+        version=("go", "version"),
     ),
     # Java's file name must match the public class, so it derives names from source.
     "java": Language(
         "java",
         "Main.java",
-        ["java", "Main"],
-        ["javac", "Main.java"],
+        ["java", "-cp", ".", "Main"],
+        ["javac", "-d", ".", "Main.java"],
         time_multiplier=2.0,
         resolve=_java_resolve,
         address_space_capped=False,
+        version=("javac", "-version"),
     ),
-    "c": Language("c", "main.c", ["./program"], ["gcc", "main.c", "-o", "program"]),
-    "cpp": Language("cpp", "main.cpp", ["./program"], ["g++", "main.cpp", "-o", "program"]),
-    "rust": Language("rust", "main.rs", ["./program"], ["rustc", "main.rs", "-o", "program"]),
+    # Compiled languages build optimised (audit R2-008): an -O0 build with the
+    # tightest time multiplier TLEd where the Python reference passed, and a debug
+    # rustc build additionally panics on integer overflow. C links libm (R2-007):
+    # without -lm every correct solution using sqrt/pow/log was a link error.
+    "c": Language(
+        "c",
+        "main.c",
+        ["./program"],
+        # -fpermissive: gcc 14 (trixie) made implicit-function-declaration,
+        # implicit-int, incompatible-pointer-types and return-mismatch hard errors.
+        # A C submission that forgets an #include compiled and scored under gcc 12
+        # and would now be a compile error and a 0% — the R2-007 failure again, from
+        # a base-image bump rather than a missing flag. This keeps them warnings.
+        ["gcc", "-O2", "-fpermissive", "main.c", "-o", "program", "-lm"],
+        version=("gcc", "-dumpfullversion"),
+    ),
+    "cpp": Language(
+        "cpp",
+        "main.cpp",
+        ["./program"],
+        ["g++", "-O2", "main.cpp", "-o", "program"],
+        version=("g++", "-dumpfullversion"),
+    ),
+    "rust": Language(
+        "rust",
+        "main.rs",
+        ["./program"],
+        ["rustc", "-O", "main.rs", "-o", "program"],
+        version=("rustc", "--version"),
+    ),
 }
 
 EXTENSION_TO_LANGUAGE: dict[str, str] = {

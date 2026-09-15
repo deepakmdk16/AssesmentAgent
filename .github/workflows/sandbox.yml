@@ -20,8 +20,9 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-  # Nothing in the image is pinned (A08) — base image, apt toolchains and the runner
-  # kernel all move without a commit, so the boundary needs a heartbeat.
+  # The base image tag, apt and the runner kernel all move without a commit (A08),
+  # so the boundary needs a heartbeat. A toolchain that moves is caught by the pin
+  # diff in scripts/lang-smoke.sh below, which turns the drift into a red run.
   schedule:
     - cron: '0 10 * * 1' # Mondays 10:00 UTC, an hour after evals.yml
 
@@ -112,3 +113,11 @@ jobs:
             assessment-agent:ci \
             uv run --frozen --no-dev --with pytest \
               pytest -q -rs -p no:cacheprovider tests/test_sandbox_nsjail.py
+
+      # Gate G3 (S03): every language compiles and runs a program that needs -lm,
+      # optimisation, a package declaration, a UTF-8 locale and one modern idiom —
+      # inside this image, through the jail — and the installed toolchains match
+      # the pin in assessment_agent/toolchains.txt. Skips are failures here.
+      - name: Language smoke and toolchain pin inside the image
+        timeout-minutes: 10
+        run: bash scripts/lang-smoke.sh assessment-agent:ci

@@ -56,3 +56,22 @@ def test_report_dict_has_full_record():
     first = d["test_cases"][0]
     assert set(first) >= {"name", "status", "input", "expected", "actual", "duration_s", "weight"}
     assert "time_complexity" in d["quality"]
+
+
+def test_a_score_exactly_at_the_threshold_passes():
+    # R2-097: 0.55 * 100 is 55.00000000000001 in floating point, so a score of
+    # exactly 55% failed while the reason printed "55% ... threshold 55%".
+    q = Question(
+        id="echo",
+        title="Echo",
+        prompt="Print the input line.",
+        constraints="tiny",
+        test_cases=(
+            TestCase("a", "5\n", "5", weight=11.0),
+            TestCase("b", "9\n", "9", weight=9.0),
+        ),
+        pass_threshold=0.55,
+    )
+    result = assess(CONST_SRC, "python", q)
+    assert result.score_pct == 55.0
+    assert result.verdict == "PASS", result.reason

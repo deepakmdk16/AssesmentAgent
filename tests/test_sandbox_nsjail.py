@@ -121,11 +121,14 @@ def test_the_image_selects_the_nsjail_backend_fail_closed():
     assert _IMPORTED_BACKEND == "nsjail", _IMPORTED_BACKEND
 
 
-def test_the_jail_hands_the_child_only_path_and_home():
+def test_the_jail_hands_the_child_only_path_home_and_lang():
     # Doubles as the control for everything below: in passthrough the child inherits
     # pytest's whole environment, so an exact match is the live proof that nsjail
     # wrapped this child at all. It is also the only check on sandbox.py's claim that
     # host secrets (ANTHROPIC_API_KEY) stay out of untrusted code.
+    #
+    # LANG is the S03 addition (R2-093): the image sets no locale, so without it the
+    # JVM encodes stdout as ASCII and a correct "café" is a wrong answer.
     #
     # LC_CTYPE is subtracted because it is the interpreter's, not the jail's: CPython
     # coerces the C locale and sets LC_CTYPE=C.UTF-8 in its own environ after exec
@@ -134,9 +137,11 @@ def test_the_jail_hands_the_child_only_path_and_home():
     # LC_CTYPE. Subtracting one known name keeps the match exact, so any variable
     # that really did survive the jail still fails this.
     src = "import os\nprint(' '.join(sorted(set(os.environ) - {'LC_CTYPE'})))\n"
-    report = run_submission(src, "python", (TestCase("env", "", "HOME PATH"),))
+    report = run_submission(src, "python", (TestCase("env", "", "HOME LANG PATH"),))
     assert report.infra_error is None, report.infra_error
-    assert report.all_passed, f"jail env is not just PATH+HOME: {report.outcomes[0].actual!r}"
+    assert report.all_passed, (
+        f"jail env is not just PATH+HOME+LANG: {report.outcomes[0].actual!r}"
+    )
 
 
 def test_the_net_namespace_has_no_route_out():

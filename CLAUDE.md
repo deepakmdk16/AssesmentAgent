@@ -69,7 +69,12 @@ belongs in the module docstring.
   `deploy/docker-run.flags` (the one source of truth; CI reads it).
 - `questions.py` — built-in questions + `validate_question` invariants.
 - `loader.py` — validates an interviewer-supplied question JSON (Phase 2).
-- `languages.py` — the per-language compile/run registry.
+- `languages.py` — the per-language compile/run registry, including each
+  toolchain's version argv.
+- `toolchains.py` + `toolchains.txt` — which compiler/interpreter version grades
+  each language: the pin, `GET /toolchains`, and the drift check CI runs against
+  the built image (`scripts/lang-smoke.sh`). A Dockerfile bump that moves a
+  version updates the pin in the same commit.
 - `agent.py` — orchestration + the score-based verdict.
 - `constants.py` — `Verdict` / `Category` / engine labels as `Literal`s.
 
@@ -118,7 +123,7 @@ belongs in the module docstring.
 
 The deterministic gate (1) is `scripts/checkpoints.sh`, wired as the git
 `pre-push` hook (run `bash scripts/install-hooks.sh` once per clone) — a failure
-aborts the push. The judgment gates (2–5) are not scriptable; the `ship` skill
+aborts the push. The judgment gates (2–6) are not scriptable; the `ship` skill
 walks them. Before committing or pushing:
 
 1. `uv run pytest` passes (report the actual result; don't claim done unverified).
@@ -142,6 +147,14 @@ walks them. Before committing or pushing:
    lines, never by marking it done; history is `git log`, so a detailed commit
    message is the
    changelog. Treat a stale open-items list as a failed gate.
+6. **Language gate (G3)** — a change to `languages.py`, `toolchains.txt` or the
+   Dockerfile's toolchain layer runs `bash scripts/lang-smoke.sh <image>` against a
+   locally built image. It compiles and runs one program per language needing the
+   maths library, optimisation, a package declaration, a UTF-8 locale and a modern
+   idiom, then diffs the installed versions against the pin. On a dev box the
+   per-language arms SKIP where a toolchain is missing or older than the idiom, so
+   a green `pytest` is **not** evidence the gate passed; CI's `sandbox` job runs it
+   in the image with `ASSESS_REQUIRE_TOOLCHAINS=1`, where a skip is a failure.
 
 ## Guardrails specific to this repo
 

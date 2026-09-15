@@ -54,6 +54,61 @@ scale** — open for extension, closed for modification.
   cannot fix it. New rule, same question: can a submission still be graded
   correctly without it? If yes, it belongs in `_authoring_shape_problems`.
 
+- **Language and toolchain gate (G3, S03).** `tests/test_lang_smoke.py` runs one
+  program per language through `run_submission` — the real grading path — each
+  needing the maths library, an optimised build, a package/module declaration, a
+  UTF-8 locale and one idiom its pinned toolchain supports. `scripts/lang-smoke.sh`
+  runs it inside the built image with `ASSESS_REQUIRE_TOOLCHAINS=1`, where a
+  missing or too-old toolchain fails instead of skipping, and adds the pin diff:
+  the versions installed must equal `assessment_agent/toolchains.txt`, which is
+  what `GET /toolchains` serves. CI's `sandbox` job runs the script. So a
+  Dockerfile or apt change that moves a compiler is red until the pin — and with it
+  what the candidate is told they are writing for — moves in the same commit, and a
+  flag that stops a correct solution compiling cannot reach a candidate. The dev-box
+  run SKIPs per language, so a green local `pytest` is not evidence it passed.
+
+---
+
+### S03 leftovers — 2026-09-15
+
+- **P2 · S — The platform does not show the candidate which toolchain grades them.**
+  `GET /toolchains` now serves the pin (R2-105's other half), and nothing reads it.
+  A candidate still writes Go or Rust without being told the version, which is what
+  made "did not compile" look arbitrary. Fix on the platform: fetch it at sitting
+  start and render it on the start screen and in the editor's language picker,
+  cached — it changes only when the agent's image is rebuilt.
+- **P3 · XS — The Java entrypoint is still found by regex, not a parser.**
+  `languages.py::_java_resolve` strips comments before looking for `public class`
+  and `package`, so a declaration inside a string literal (`String s = "package
+  x;";` before the class) would still mislead it. No real submission looks like
+  that, and the failure is a compile error the candidate sees at once, not a silent
+  wrong answer. A real fix is `javac -d . *.java` plus reading the emitted class
+  tree, which is a bigger change than the risk warrants.
+- **P2 · XS — Nothing keeps the three language lists in step.**
+  `languages.py::LANGUAGES` is authoritative and now also decides what
+  `GET /toolchains` returns, but the platform mirrors it by hand in
+  `config.py::SUPPORTED_LANGUAGES` and again in `web/src/types.ts::LANGUAGES`, with
+  no gate. Adding or removing a language here silently offers a candidate one the
+  agent will 400. The platform's parity harness already imports this repo
+  (`tests/test_agent_contract_parity.py`), so the fix is a set equality there —
+  it belongs to a platform session, with this repo as the side it reads.
+- **P3 · XS — `sandbox.py::child_env` is the place to filter the child's
+  environment, and it does not.**
+  In passthrough it hands the untrusted child the worker's whole environment —
+  `ANTHROPIC_API_KEY`, `ASSESS_API_TOKEN`, `ASSESS_SIGNING_SECRET` — which a
+  submission can print to stdout, into `actual`, into the stored result and the
+  interviewer's page. Not a regression: before S03 the child inherited exactly the
+  same environment implicitly, because no `env` was passed. But S03 made this the
+  one named construction point, so the allowlist belongs here. Under nsjail the
+  jail already clears everything and sets only PATH, HOME and LANG, so the exposure
+  is passthrough-only (a dev box, or a deploy where nsjail is missing).
+- **P3 · XS — The smoke programs pin one idiom per language by hand.**
+  `tests/test_lang_smoke.py::SMOKE` names the minimum version each program needs,
+  and `test_the_pin_is_at_least_what_each_program_needs` keeps the pin above it.
+  Nothing keeps the idioms themselves current: when a toolchain moves the programs
+  still exercise the old idiom. Revisit the list whenever the pin jumps a major
+  version.
+
 ---
 
 ## Launch audit — 2026-09-06
@@ -171,7 +226,8 @@ blocks legitimate VPC callbacks.**
 - **A11 · P2 · XS — Compile step lacks the process-group kill.**
   Evidence: the compile step in `_run_submission_unlocked` uses
   subprocess.run(..., timeout=) without start_new_session/_kill_tree, unlike
-  `_run_case`'s Popen. Why: a
+  `_run_case`'s Popen (since S03 `go build` reaches this too, and it forks its own
+  compile/link tools). Why: a
   gcc/javac timeout kills only the direct child on passthrough → orphaned cc1/JVM
   processes. Fix: route compile through the same Popen + _kill_tree path.
   _Verified: cited lines read in this audit; source: trace._

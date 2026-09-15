@@ -34,6 +34,11 @@ change anyone's grade.
    stdout. A per-language registry ([languages.py](assessment_agent/languages.py))
    knows how to compile/run Python, JavaScript, Ruby, Go, Java, C, C++, Rust,
    each with a time-limit multiplier (interpreted languages get more slack).
+   Compiled languages build optimised and C links libm, every child runs under a
+   UTF-8 locale, and the exact toolchain versions are pinned in
+   [toolchains.txt](assessment_agent/toolchains.txt), served on `GET /toolchains`
+   and diffed against the built image by `scripts/lang-smoke.sh` in CI — so what a
+   candidate is told they are writing for is what compiles their code.
 2. **Weighted score** — every test case carries points, and **larger inputs are
    worth more**. Correctness cases are small (few points each); the large,
    generated *performance* case is worth the most. The candidate earns
@@ -217,8 +222,11 @@ document is served — the table below is the contract.
 | `POST /run` | Candidate's "Run" button: execute once against their own stdin. No grading, no LLM. |
 | `POST /run/tests` | Candidate's rehearsal: pass/fail per case **only** — never the input/expected/actual. |
 | `POST /questions/draft` | Draft a validated question from a brief ([authoring.py](assessment_agent/authoring.py)). Claude writes the prose, constraints, reference solution and test *inputs*; the runner executes the reference to produce every `expected`. The model never supplies an answer. |
-| `GET /health` | Liveness. The one unauthenticated route. |
+| `GET /health` | Liveness. Unauthenticated. |
+| `GET /toolchains` | The pinned compiler/interpreter version each language is graded with ([toolchains.py](assessment_agent/toolchains.py)). Unauthenticated, like `/health`: the platform shows it to the candidate before they write a line. |
 | `GET /metrics` | Prometheus text exposition of this worker's counters (jobs by outcome, in-flight, callback outcomes, grade-latency histogram). Authenticated like everything else; counters are per-process and reset on restart. |
+
+`/health` and `/toolchains` are the two unauthenticated routes.
 
 Auth is a shared secret in the `X-Assess-Token` header and is **fail-closed**:
 with `ASSESS_API_TOKEN` unset every route returns 503 unless you explicitly set

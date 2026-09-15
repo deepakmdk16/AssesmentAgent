@@ -349,3 +349,55 @@ def test_cleanup_logs_a_leftover_instead_of_raising(caplog, tmp_path):
     with caplog.at_level(logging.WARNING, logger=runner.__name__):
         runner._remove_workdir(gone)
     assert len(caplog.records) == 1 and str(gone) in caplog.text
+
+
+# --- S03 ---------------------------------------------------------------------------
+
+
+def test_all_tle_is_not_an_execution_failure():
+    # R2-096: a submission that timed out on every case was classed "did not execute
+    # (compile/runtime failure)", which skipped the quality judge and the adversarial
+    # probe for what is a running, correct-but-slow program.
+    tle = runner.TestOutcome("t", "", "x", "", False, "time limit exceeded", timed_out=True)
+    report = runner.ExecutionReport("python", None, [tle, tle])
+    assert report.execution_failed is False
+    crashed = runner.TestOutcome("t", "", "x", "", False, "Traceback ...")
+    assert runner.ExecutionReport("python", None, [crashed, crashed]).execution_failed is True
+    # But a crash among the TLEs still did not execute meaningfully: the verdict is a
+    # decided FAIL either way, and judging it would buy a live LLM call per grade.
+    assert runner.ExecutionReport("python", None, [tle, crashed]).execution_failed is True
+    passing = runner.TestOutcome("t", "", "x", "x", True)
+    assert runner.ExecutionReport("python", None, [tle, passing]).execution_failed is False
+
+
+@pytest.mark.parametrize("host_locale", [{}, {"LC_ALL": "C", "LC_CTYPE": "C"}])
+def test_the_child_always_runs_under_a_utf8_locale(monkeypatch, host_locale):
+    # R2-093: with no LANG the JVM picks file.encoding=ANSI_X3.4-1968 and prints
+    # "caf? ?" for "café —", so any answer containing non-ASCII was wrong. The runner
+    # sets the locale itself rather than trusting the host (the image had none).
+    #
+    # The second arm is a worker started with LC_ALL=C: LC_ALL and LC_CTYPE both
+    # outrank LANG, so setting LANG alone would leave the child on US-ASCII.
+    monkeypatch.delenv("LANG", raising=False)
+    monkeypatch.delenv("LC_ALL", raising=False)
+    monkeypatch.delenv("LC_CTYPE", raising=False)
+    for name, value in host_locale.items():
+        monkeypatch.setenv(name, value)
+    src = (
+        "import locale, os, sys\n"
+        "print(os.environ.get('LANG'), os.environ.get('LC_ALL'),"
+        " locale.getpreferredencoding(False).lower().replace('-', ''), sep='|')\n"
+    )
+    report = run_submission(src, "python", (tc("", "C.UTF-8|C.UTF-8|utf8"),))
+    assert report.all_passed, report.outcomes[0].actual
+
+
+@pytest.mark.skipif(shutil.which("go") is None, reason="needs go")
+def test_a_go_compile_error_is_a_compile_error():
+    # R2-092: `go run` per case reported a syntax error as a runtime error on every
+    # case ("wrong answer on ..."), never as compile_error.
+    src = 'package main\nimport "fmt"\nfunc main() { fmt.Println("x" }\n'
+    report = run_submission(src, "go", (tc("", "x"), tc("", "x")), time_limit_s=15.0)
+    assert report.infra_error is None, report.infra_error
+    assert report.compile_error is not None
+    assert report.outcomes == []

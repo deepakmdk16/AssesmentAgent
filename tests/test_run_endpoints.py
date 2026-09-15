@@ -187,3 +187,44 @@ def test_run_tests_requires_token_when_configured(client, monkeypatch):
         client.post("/run/tests", json=body, headers={"X-Assess-Token": "s3cret"}).status_code
         == 200
     )
+
+
+def test_a_lone_surrogate_in_the_code_does_not_500(client):
+    # R2-098: JSON may carry "\ud800" (a lone surrogate); writing that source to disk
+    # raised UnicodeEncodeError, a 500 here and an ERROR callback on /assessments. It
+    # cannot be encoded as UTF-8, so it becomes U+FFFD and the program runs on its
+    # own merits.
+    body = b'{"code":"print(\'a\\ud800b\')","language":"python"}'
+    resp = client.post("/run", content=body, headers={"content-type": "application/json"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["stdout"] == "a�b"
+
+
+def test_a_lone_surrogate_is_replaced_on_every_candidate_supplied_field():
+    from assessment_agent import api
+
+    for model in (api.RunRequest, api.RunTestsRequest, api.AssessmentRequest):
+        req = model.model_validate({"code": "x\ud800y", "language": "python", "question": {}})
+        assert req.code == "x�y", model.__name__
+
+    # Not only `code`: a question's stdin/expected reaches tc.stdin.encode() in the
+    # runner just the same, and the candidate's own stdin reaches it on /run.
+    assert api.RunRequest.model_validate(
+        {"code": "print(1)", "language": "python", "stdin": "a\ud800b"}
+    ).stdin == "a�b"
+    nested = api.RunTestsRequest.model_validate(
+        {
+            "code": "print(1)",
+            "language": "python",
+            "question": {"test_cases": [{"stdin": "a\ud800", "expected": "b\udfff"}]},
+        }
+    )
+    assert nested.question["test_cases"][0] == {"stdin": "a�", "expected": "b�"}
+
+
+def test_a_lone_surrogate_in_the_stdin_does_not_500(client):
+    body = b'{"code":"import sys; print(sys.stdin.read().strip())","language":"python",'
+    body += b'"stdin":"a\\ud800b"}'
+    resp = client.post("/run", content=body, headers={"content-type": "application/json"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["stdout"] == "a�b"
