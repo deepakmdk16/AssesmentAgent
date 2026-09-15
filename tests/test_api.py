@@ -285,6 +285,20 @@ def test_malformed_question_is_400(client):
     assert "invalid question" in resp.json()["detail"]
 
 
+def test_blank_constraints_still_grades(client):
+    """R2-002: the platform's wizard defaulted Constraints to empty, so 53 saved
+    questions refused to grade and every submission against them ended as "error"
+    with no reason the interviewer could see. Prose the candidate already read
+    cannot change the grade, so the grade path warns instead of refusing."""
+    resp = client.post("/assessments", json=_job() | {"question": QUESTION | {"constraints": ""}})
+    assert resp.status_code == 202
+
+    got = client.get(f"/assessments/{resp.json()['job_id']}").json()
+    assert got["status"] == "done"
+    assert got["result"]["verdict"] == "PASS"
+    assert any("constraints" in w for w in got["result"]["warnings"])
+
+
 def test_jobs_map_is_bounded(client, monkeypatch):
     # The polling map is transient run-state, not a datastore: it must not grow
     # without bound. Once over the cap, the oldest job is evicted (FIFO).

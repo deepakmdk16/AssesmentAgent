@@ -65,7 +65,8 @@ Rules are phrased as "do X, not Y" on purpose — specific and local beats abstr
   deploy-time / creation-time check that lists offenders), and (2) **degrade rather
   than hard-fail** on any path where the actor hitting the check can't fix the data.
 - Concretely: an **authoring** invariant (a question needs ≥ `MIN_CORRECTNESS_CASES`
-  correctness cases and a performance case) stays **hard** where it's authored
+  correctness cases, a performance case, and non-empty title/prompt/constraints)
+  stays **hard** where it's authored
   (`authoring.py`, `draft_eval.py`), but on the **grade/intake** path
   (`question_from_dict(..., degrade_authoring=True)`) it downgrades to a warning
   carried in the result — a candidate must never eat a 400 for the interviewer's
