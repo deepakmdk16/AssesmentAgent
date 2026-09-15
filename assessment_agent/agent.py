@@ -11,6 +11,7 @@ verdict.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 
 from .adversarial import (
@@ -24,6 +25,47 @@ from .judge import CriterionScore, QualityAssessment, assess_quality, skipped_as
 from .pricing import Usage
 from .questions import HARDCODED_QUESTION, Question
 from .runner import ExecutionReport, TestOutcome, run_submission
+
+# R2-001: `result_to_dict`'s payload is POSTed to the platform's
+# `/assessments/callback`, which 413s a body over its own MAX_BODY_BYTES — and the
+# agent does not retry a 4xx, so an oversized body loses the grade outright rather
+# than degrading it. Each echoed value therefore carries at most this many bytes.
+# A stored case's input is bounded by the platform's schema, but the candidate's
+# stdout is bounded only by `runner._OUTPUT_LIMIT_BYTES` (64 MB), so no cap the
+# platform could pick would be safe while the payload echoed whole values. The
+# platform's cross-repo gate reads this constant to prove the worst body fits.
+PAYLOAD_EXCERPT_BYTES = int(os.environ.get("ASSESS_PAYLOAD_EXCERPT_KB", "8")) * 1024
+
+
+def _excerpt(text: str) -> str:
+    """`text` if it already fits, else its head and tail around a marker naming
+    the full size.
+
+    Measured in bytes, not characters, because the cap it serves is a byte cap on
+    the encoded body. Idempotent by construction — the result is at most
+    PAYLOAD_EXCERPT_BYTES, so re-serializing a rebuilt result (the `POST /report`
+    path, via `result_from_dict`) returns it unchanged rather than eroding it.
+    """
+    raw = text.encode()
+    if len(raw) <= PAYLOAD_EXCERPT_BYTES:
+        return text
+    marker = f"\n... [{len(raw):,} bytes total, middle elided] ...\n"
+    # Clamped: under a cap smaller than the marker itself the split would go
+    # negative, and `raw[:head]` with a negative head returns nearly the whole
+    # input — an "excerpt" larger than the thing it bounds.
+    keep = max(0, PAYLOAD_EXCERPT_BYTES - len(marker.encode()))
+    head = keep * 2 // 3
+    tail = keep - head
+    # `errors="ignore"` drops at most one partial multi-byte character at each cut.
+    return raw[:head].decode(errors="ignore") + marker + raw[len(raw) - tail :].decode(errors="ignore")
+
+
+def _excerpt_opt(text: str | None) -> str | None:
+    """`_excerpt` for the optional free-text fields. `compile_error` is raw
+    compiler stderr and `error` is a raw runtime message — a C++ template-error
+    cascade runs to megabytes, and an unbounded one here loses the grade exactly
+    the way an unbounded `actual` did."""
+    return None if text is None else _excerpt(text)
 
 
 @dataclass
@@ -170,20 +212,20 @@ def result_to_dict(result: AssessmentResult) -> dict:
         "points_earned": result.points_earned,
         "points_total": result.points_total,
         "pass_threshold_pct": result.pass_threshold_pct,
-        "compile_error": ex.compile_error,
-        "infra_error": ex.infra_error,
+        "compile_error": _excerpt_opt(ex.compile_error),
+        "infra_error": _excerpt_opt(ex.infra_error),
         "test_cases": [
             {
                 "name": o.name,
                 "category": o.category,
                 "weight": o.weight,
                 "status": "PASS" if o.passed else ("TLE" if o.timed_out else "FAIL"),
-                "input": o.stdin,
-                "expected": o.expected,
-                "actual": o.actual,
+                "input": _excerpt(o.stdin),
+                "expected": _excerpt(o.expected),
+                "actual": _excerpt(o.actual),
                 "duration_s": round(o.duration_s, 3),
                 "timed_out": o.timed_out,
-                "error": o.error,
+                "error": _excerpt_opt(o.error),
             }
             for o in ex.outcomes
         ],

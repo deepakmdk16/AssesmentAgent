@@ -17,6 +17,7 @@ from assessment_agent.api import app
 from assessment_agent.authoring import DraftResult, DraftSpec, build_from_spec, draft_question
 from assessment_agent.constants import OFFLINE_ENGINE
 from assessment_agent.loader import question_from_dict
+from assessment_agent.runner import ExecutionReport, TestOutcome
 
 # Reference (oracle): read N, then N ints; print their sum.
 REF_PY = "import sys\nd = sys.stdin.read().split()\nn = int(d[0])\nprint(sum(int(x) for x in d[1 : 1 + n]))\n"
@@ -599,3 +600,47 @@ def test_draft_set_all_unusable_returns_422(client, monkeypatch):
     r = client.post("/questions/draft-set", json=_body(count=2))
     assert r.status_code == 422
     assert "nothing usable" in str(r.json())
+
+
+# --- R2-026: the generated performance input must fit what the platform stores --
+
+
+def _perf_spec() -> authoring.DraftSpec:
+    return authoring.DraftSpec(
+        id="q",
+        title="Q",
+        prompt="p",
+        constraints="c",
+        reference_solution="print(1)",
+        reference_language="python",
+        correctness_inputs=[],
+        performance_generator="print(1)",
+    )
+
+
+def _report(stdout: str) -> ExecutionReport:
+    return ExecutionReport(
+        language="python",
+        compile_error=None,
+        outcomes=[TestOutcome(name="x", stdin="", expected="", actual=stdout, passed=True)],
+    )
+
+
+def test_an_oversized_generated_input_is_refused(monkeypatch) -> None:
+    """The generator is a model-written program and nothing bounds what it prints.
+    Three dev questions were drafted with 7.7-10.1 MB inputs; the platform cannot
+    store one (`TestCaseIn.stdin`) and the grade for it was 413'd on the callback
+    (R2-001). Reject the case here, where there is still a human to tell."""
+    monkeypatch.setattr(
+        authoring, "run_submission", lambda *a, **k: _report("9" * (authoring.PERF_INPUT_MAX_BYTES + 1))
+    )
+    warnings: list[str] = []
+    assert authoring._build_performance_case(_perf_spec(), warnings) is None
+    assert any("too large" in w for w in warnings), warnings
+
+
+def test_a_generated_input_within_the_cap_is_kept(monkeypatch) -> None:
+    monkeypatch.setattr(authoring, "run_submission", lambda *a, **k: _report("9" * 1000))
+    warnings: list[str] = []
+    case = authoring._build_performance_case(_perf_spec(), warnings)
+    assert case is not None and warnings == []

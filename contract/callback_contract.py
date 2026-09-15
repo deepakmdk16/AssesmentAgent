@@ -7,6 +7,20 @@ reason, and the error signals (see the platform's ``assessments_callback``).
 Those fields, and only those, are the contract; everything else in the payload is
 opaque to the platform and may change freely.
 
+SIZE is the exception to "freely": the platform 413s a body over its own
+``MAX_BODY_BYTES`` and the agent does not retry a 4xx, so an oversized callback
+does not degrade the grade, it loses it (R2-001 — a 9.6 MB performance input did
+exactly that, twice). Two bounds hold it, on opposite sides, and neither is
+sufficient alone: the platform bounds the test cases it will STORE
+(``schemas.py::MAX_QUESTION_CASES_BYTES``), and the agent bounds every free-text
+value it ECHOES back (``agent.py::PAYLOAD_EXCERPT_BYTES``) — the second because
+a candidate's stdout, and the compiler's stderr, are bounded only by the agent's
+64 MB output cap, which no choice of ``MAX_BODY_BYTES`` could absorb. Note that
+the second bound covers ``compile_error`` and each case's ``error`` as well as
+its I/O: those come from the toolchain, so no bound on the QUESTION reaches them. The platform's
+``tests/test_agent_contract_parity.py`` multiplies these out and fails if raising
+one without the other would put the worst body over the cap.
+
 This module is mirrored BYTE-FOR-BYTE in both repos (agent + platform) and kept
 identical by ``scripts/checkpoints.sh`` — a push fails if the two copies diverge,
 exactly like ``signing.py``. Edit it in one repo and the gate stops you until you
