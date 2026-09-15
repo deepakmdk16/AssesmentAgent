@@ -34,6 +34,18 @@ deliberately untracked (`.git/info/exclude`):
 Working rule for any item: **make the feature work end to end, then the UI, then
 scale** — open for extension, closed for modification.
 
+## Installed gates (S00)
+
+- **Question validator parity (G1).** `validate_question` is this repo's half of
+  the intake contract: the platform must never *store* a question it refuses to
+  grade, or the candidate — who cannot edit it — eats an "error" with no reason
+  (R2-002). The gate is a test in the platform's suite
+  (`../assessment-platform/tests/test_agent_contract_parity.py`), and
+  `scripts/checkpoints.sh` now runs it from this side as well, because the edit
+  that breaks it is usually made here. Skips with a notice when the companion
+  repo or its venv is absent. Loosening `validate_question` is now a cross-repo
+  change: check what the platform lets through before you relax a rule.
+
 ---
 
 ## Launch audit — 2026-09-06

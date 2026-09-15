@@ -26,6 +26,25 @@ if [ -n "$_hits" ]; then
   echo "$_hits"; echo "❌ possible hard-coded secret in tracked files (above)"; exit 1
 fi
 
+# Where the companion repo is: beside this one (local dev) or inside the
+# workspace (CI checks it out there — Actions cannot check out above it). Empty
+# when it isn't present at all, and every cross-repo check below then skips with
+# a notice rather than failing.
+#
+# Except in CI, which is the thing responsible for making it present: there
+# REQUIRE_COMPANION_REPO=1 turns "absent" into a failure. Without that, a renamed
+# path or a failed checkout would put every cross-repo gate back to a silent skip
+# that exits 0 — the exact failure mode they were written to end.
+_companion=""
+for _c in ../assessment-platform ./assessment-platform; do
+  if [ -d "$_c/assessment_platform" ]; then _companion="$_c"; break; fi
+done
+
+if [ -z "$_companion" ] && [ "${REQUIRE_COMPANION_REPO:-0}" = "1" ]; then
+  echo "❌ REQUIRE_COMPANION_REPO=1 but the companion platform repo is not checked out"
+  echo "   beside this one or inside the workspace — every cross-repo gate would skip."; exit 1
+fi
+
 echo "==> signing.py parity (cross-repo)"
 # signing.py is mirrored byte-for-byte in the companion repo; if the two diverge,
 # every signed request 401s. This is the "keep them identical" comment turned into
@@ -33,7 +52,7 @@ echo "==> signing.py parity (cross-repo)"
 # local pre-push case, where the edit is actually made — and skips with a notice
 # otherwise (e.g. CI checks out a single repo). See CLAUDE.md → signing.py.
 _own_signing="assessment_agent/signing.py"
-_companion_signing="../assessment-platform/assessment_platform/signing.py"
+_companion_signing="${_companion:-/nonexistent}/assessment_platform/signing.py"
 if [ -f "$_companion_signing" ]; then
   if cmp -s "$_own_signing" "$_companion_signing"; then
     echo "  ✓ identical to companion repo"
@@ -52,7 +71,7 @@ echo "==> callback contract parity (cross-repo)"
 # payload the other rejects. Same gate as signing.py; skips when the companion
 # repo isn't checked out beside this one. See contract/callback_contract.py.
 _own_contract="contract/callback_contract.py"
-_companion_contract="../assessment-platform/contract/callback_contract.py"
+_companion_contract="${_companion:-/nonexistent}/contract/callback_contract.py"
 if [ -f "$_companion_contract" ]; then
   if cmp -s "$_own_contract" "$_companion_contract"; then
     echo "  ✓ identical to companion repo"
@@ -63,6 +82,26 @@ if [ -f "$_companion_contract" ]; then
   fi
 else
   echo "  ℹ️  companion repo not checked out beside this one — contract parity skipped"
+fi
+
+echo "==> question validator parity (cross-repo)"
+# `validate_question` is this repo's half of the intake contract: the platform
+# must never STORE a question this refuses to grade, or the candidate — who
+# cannot edit it — eats an "error" with no reason (audit R2-002). The gate is a
+# test in the platform's suite (tests/test_agent_contract_parity.py), but the
+# edit that breaks it is usually made here, so run it from this side too.
+# Needs the companion's own environment; skips with a notice when either the
+# repo or its venv is absent.
+if [ -n "$_companion" ] && [ -d "$_companion/.venv" ]; then
+  if ( cd "$_companion" && uv run --no-sync pytest -q tests/test_agent_contract_parity.py ); then
+    echo "  ✓ the platform still refuses everything this validator refuses"
+  else
+    echo "  ❌ question validator parity failed — a question the platform stores would not grade here."
+    echo "     Run it in the platform repo for the detail: uv run pytest tests/test_agent_contract_parity.py"
+    exit 1
+  fi
+else
+  echo "  ℹ️  companion repo (or its .venv) not available — validator parity skipped"
 fi
 
 echo "==> docs drift"
