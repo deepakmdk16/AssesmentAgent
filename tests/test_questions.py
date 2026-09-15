@@ -218,3 +218,27 @@ def test_structural_invariant_stays_hard_on_grade_path():
     # Only authoring-shape invariants degrade; a broken grading parameter still raises.
     with pytest.raises(ValueError, match="pass_threshold"):
         validate_question(_q(pass_threshold=1.5), degrade_authoring=True)
+
+# --------------------------------------------------------------------------- #
+# The prose fields are authoring-shape too (R2-002): the candidate READ them
+# before they wrote the code and nothing in the run/compare path touches them, so
+# a blank one cannot make a grade wrong — refusing the job only strands a
+# candidate who cannot edit the question.
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("field", ["title", "prompt", "constraints"])
+def test_blank_prose_is_hard_when_authoring(field):
+    with pytest.raises(ValueError, match=field):
+        validate_question(_q(**{field: "  "}))  # default (authoring) mode
+
+
+@pytest.mark.parametrize("field", ["title", "prompt", "constraints"])
+def test_blank_prose_degrades_to_warning_on_grade_path(field):
+    warnings = validate_question(_q(**{field: ""}), degrade_authoring=True)
+    assert any(field in w for w in warnings)
+
+
+def test_blank_id_stays_hard_on_grade_path():
+    # The id is identity, not prose: it keys the job, the logs and the report, so
+    # it is the one string field that still refuses the job.
+    with pytest.raises(ValueError, match="id"):
+        validate_question(_q(id=" "), degrade_authoring=True)

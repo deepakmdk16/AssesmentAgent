@@ -176,10 +176,18 @@ def _authoring_shape_problems(q: Question) -> list[str]:
     A submission still grades correctly against a question that violates these —
     they make a question a *good* assessment, not a *runnable* one — so on the path
     the interviewer can't fix (a candidate's live submission) they must not hard-
-    fail. Order matches the original check order: performance case first, then the
-    correctness floor.
+    fail. The prose fields are here for exactly that reason: `title`, `prompt` and
+    `constraints` are what the candidate READ before they wrote the code, and
+    nothing in the run/compare path touches them, so a blank one cannot make a
+    grade wrong — it can only strand the candidate who already submitted (R2-002:
+    53 questions saved with the platform wizard's empty Constraints default, and
+    every submission against them ended as "error"). Order is prose first, then
+    the performance case, then the correctness floor.
     """
     problems: list[str] = []
+    for field in ("title", "prompt", "constraints"):
+        if not getattr(q, field).strip():
+            problems.append(f"question {q.id!r}: {field} must be non-empty")
     if not any(t.category == PERFORMANCE for t in q.test_cases):
         problems.append(
             f"question {q.id!r}: needs at least one 'performance' test case "
@@ -200,10 +208,10 @@ def validate_question(q: Question, *, degrade_authoring: bool = False) -> list[s
     the API/CLI grade-time intake.
 
     Raises ValueError on the first *structural* problem — one that leaves the
-    question malformed or impossible to grade. The two **authoring-shape** invariants
-    (a required performance case and the `MIN_CORRECTNESS_CASES` correctness floor,
-    see `_authoring_shape_problems`) are hard by default — where the invariant
-    belongs, at authoring/drafting time. Pass ``degrade_authoring=True`` on the
+    question malformed or impossible to grade. The **authoring-shape** invariants
+    (non-empty prose, a required performance case and the `MIN_CORRECTNESS_CASES`
+    correctness floor, see `_authoring_shape_problems`) are hard by default — where
+    the invariant belongs, at authoring/drafting time. Pass ``degrade_authoring=True`` on the
     grade/intake path to collect them as **warnings** and keep grading, so a
     candidate is never rejected for the interviewer's question shape (CONVENTIONS.md
     — degrade gracefully when tightening a shared invariant).
@@ -213,9 +221,6 @@ def validate_question(q: Question, *, degrade_authoring: bool = False) -> list[s
     """
     if not q.id.strip():
         raise ValueError("question id must be non-empty")
-    for field in ("title", "prompt", "constraints"):
-        if not getattr(q, field).strip():
-            raise ValueError(f"question {q.id!r}: {field} must be non-empty")
     if not q.test_cases:
         raise ValueError(f"question {q.id!r}: needs at least one test case")
 

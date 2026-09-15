@@ -45,6 +45,14 @@ scale** — open for extension, closed for modification.
   that breaks it is usually made here. Skips with a notice when the companion
   repo or its venv is absent. Loosening `validate_question` is now a cross-repo
   change: check what the platform lets through before you relax a rule.
+  S02 settled which way each rule falls. A rule the grade path cannot survive —
+  weight <= 0, empty expected output, duplicate case names, `time_limit_s` <= 0,
+  a blank id — still raises on every path. A rule about the SHAPE of a good
+  question — the case floor, a required performance case, and now non-empty
+  `title`/`prompt`/`constraints` — is hard while authoring or drafting and a
+  warning at grade time, because the candidate has already read that prose and
+  cannot fix it. New rule, same question: can a submission still be graded
+  correctly without it? If yes, it belongs in `_authoring_shape_problems`.
 
 ---
 
