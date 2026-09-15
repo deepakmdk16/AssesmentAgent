@@ -73,6 +73,7 @@ except ImportError:  # pragma: no cover - non-POSIX (e.g. Windows)
 from .constants import CORRECTNESS, Category
 from .languages import LANGUAGES
 from .questions import TestCase
+from .sandbox import child_env
 from .sandbox import is_active as sandbox_active
 from .sandbox import wrap as sandbox_wrap
 
@@ -137,10 +138,14 @@ class ExecutionReport:
         """True when the submission could not be run meaningfully: it did not
         compile, the toolchain was missing, or every test case errored at
         runtime. A wrong-but-running or correct-but-slow (TLE) submission is NOT
-        a failure here — those still merit a quality report."""
+        a failure here — those still merit a quality report. A TLE carries an
+        `error` string too, so it is excluded by name (audit R2-096: an all-TLE
+        submission was classed "did not execute")."""
         if self.compile_error is not None or self.infra_error is not None:
             return True
-        return bool(self.outcomes) and all(o.error is not None for o in self.outcomes)
+        return bool(self.outcomes) and all(
+            o.error is not None and not o.timed_out for o in self.outcomes
+        )
 
     def by_category(self, category: Category) -> list[TestOutcome]:
         return [o for o in self.outcomes if o.category == category]
@@ -298,6 +303,7 @@ def _run_case(
                 stdin=subprocess.PIPE,
                 stdout=out_f,
                 stderr=err_f,
+                env=child_env(),
                 preexec_fn=preexec,
                 start_new_session=_NEW_SESSION,
             )
@@ -415,6 +421,7 @@ def _run_submission_unlocked(
                     capture_output=True,
                     text=True,
                     timeout=compile_timeout,
+                    env=child_env(),
                 )
             except FileNotFoundError as exc:
                 return ExecutionReport(

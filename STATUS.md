@@ -54,6 +54,43 @@ scale** — open for extension, closed for modification.
   cannot fix it. New rule, same question: can a submission still be graded
   correctly without it? If yes, it belongs in `_authoring_shape_problems`.
 
+- **Language and toolchain gate (G3, S03).** `tests/test_lang_smoke.py` runs one
+  program per language through `run_submission` — the real grading path — each
+  needing the maths library, an optimised build, a package/module declaration, a
+  UTF-8 locale and one idiom its pinned toolchain supports. `scripts/lang-smoke.sh`
+  runs it inside the built image with `ASSESS_REQUIRE_TOOLCHAINS=1`, where a
+  missing or too-old toolchain fails instead of skipping, and adds the pin diff:
+  the versions installed must equal `assessment_agent/toolchains.txt`, which is
+  what `GET /toolchains` serves. CI's `sandbox` job runs the script. So a
+  Dockerfile or apt change that moves a compiler is red until the pin — and with it
+  what the candidate is told they are writing for — moves in the same commit, and a
+  flag that stops a correct solution compiling cannot reach a candidate. The dev-box
+  run SKIPs per language, so a green local `pytest` is not evidence it passed.
+
+---
+
+### S03 leftovers — 2026-09-15
+
+- **P2 · S — The platform does not show the candidate which toolchain grades them.**
+  `GET /toolchains` now serves the pin (R2-105's other half), and nothing reads it.
+  A candidate still writes Go or Rust without being told the version, which is what
+  made "did not compile" look arbitrary. Fix on the platform: fetch it at sitting
+  start and render it on the start screen and in the editor's language picker,
+  cached — it changes only when the agent's image is rebuilt.
+- **P3 · XS — The Java entrypoint is still found by regex, not a parser.**
+  `languages.py::_java_resolve` strips comments before looking for `public class`
+  and `package`, so a declaration inside a string literal (`String s = "package
+  x;";` before the class) would still mislead it. No real submission looks like
+  that, and the failure is a compile error the candidate sees at once, not a silent
+  wrong answer. A real fix is `javac -d . *.java` plus reading the emitted class
+  tree, which is a bigger change than the risk warrants.
+- **P3 · XS — The smoke programs pin one idiom per language by hand.**
+  `tests/test_lang_smoke.py::SMOKE` names the minimum version each program needs,
+  and `test_the_pin_is_at_least_what_each_program_needs` keeps the pin above it.
+  Nothing keeps the idioms themselves current: when a toolchain moves the programs
+  still exercise the old idiom. Revisit the list whenever the pin jumps a major
+  version.
+
 ---
 
 ## Launch audit — 2026-09-06

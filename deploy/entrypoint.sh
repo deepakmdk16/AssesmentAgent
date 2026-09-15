@@ -50,7 +50,16 @@ done
 
 # Docker mounts a private cgroupns read-only. Remounting it takes SYS_ADMIN (checked
 # above) plus an AppArmor profile that allows mount (docker-default doesn't).
-mount -o remount,rw "$CG" ||
+#
+# LIBMOUNT_FORCE_MOUNT2=always keeps libmount on the classic mount(2) syscall. Since
+# util-linux 2.39 (Debian trixie) it tries the new mount API — fsopen/fsconfig/
+# fsmount/move_mount — first, and deploy/seccomp.json deliberately does not allow
+# those: they came in with the CAP_SYS_ADMIN catch-all rule that scripts/gen-seccomp.py
+# drops, so that the worker and every jail cannot reach fsopen, setns or bpf once the
+# caps are gone. The new API returns EPERM there rather than ENOSYS, so libmount does
+# not fall back on its own and the remount fails. Forcing the old syscall keeps the
+# filter as narrow as it is instead of widening it for one call at boot.
+LIBMOUNT_FORCE_MOUNT2=always mount -o remount,rw "$CG" ||
     die "cannot remount $CG read-write; pass --security-opt=apparmor=assess-nsjail (load deploy/apparmor/assess-nsjail on the host first)"
 
 # cgroup v2's "no internal processes" rule: the ns root can enable controllers for

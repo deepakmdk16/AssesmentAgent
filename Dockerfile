@@ -45,7 +45,7 @@
 # main; fork PRs are skipped). It still SKIPs on a macOS dev box.
 
 # ---- Stage 1: build nsjail from source (not in Debian stable apt) ----
-FROM debian:bookworm-slim AS nsjail-build
+FROM debian:trixie-slim AS nsjail-build
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates git build-essential pkg-config \
         libprotobuf-dev protobuf-compiler \
@@ -57,11 +57,15 @@ RUN git clone --depth 1 --branch 3.4 https://github.com/google/nsjail.git /nsjai
     && strip /nsjail/nsjail
 
 # ---- Stage 2: runtime ----
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 # Language toolchains for every entry in assessment_agent/languages.py:
-# python, javascript(node), ruby, go, java, c(gcc), cpp(g++), rust(rustc).
-# Plus nsjail's shared-library deps (libprotobuf, libnl-route).
+# python, javascript(node), ruby, go, java(javac), c(gcc), cpp(g++), rust(rustc).
+# Debian trixie's, because bookworm's (rustc 1.63, go 1.19, Node 18 — end of life)
+# rejected idioms candidates write today (audit R2-105). The versions this yields
+# are pinned in assessment_agent/toolchains.txt and diffed against the built image
+# by scripts/lang-smoke.sh in CI, so a bump here changes that file in the same
+# commit. Plus nsjail's shared-library deps (libprotobuf, libnl-route).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         python3 \
@@ -71,7 +75,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         default-jdk-headless \
         gcc g++ \
         rustc \
-        libprotobuf32 libnl-route-3-200 \
+        libprotobuf32t64 libnl-route-3-200 \
     && rm -rf /var/lib/apt/lists/*
 
 # Small, still-changing packages get their own layer, so adding one doesn't

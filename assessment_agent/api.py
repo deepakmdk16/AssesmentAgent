@@ -51,6 +51,7 @@ import json
 import logging
 import logging.config
 import os
+import re
 import secrets
 import tempfile
 import time
@@ -60,13 +61,13 @@ from collections.abc import AsyncIterator, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 from urllib.parse import urlparse
 
 import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, Field
 
 from . import observability
 from .agent import assess, result_from_dict, result_to_dict
@@ -78,6 +79,7 @@ from .ratelimit import client_ip, limiter
 from .report import build_report_pdf
 from .runner import run_once, run_submission
 from .signing import SIGNATURE_HEADER, sign, verify
+from .toolchains import pinned as pinned_toolchains
 
 logger = logging.getLogger(__name__)
 
@@ -260,13 +262,45 @@ _MAX_BRIEF_CHARS = 20_000
 # candidates different siblings without a runaway bill.
 _MAX_SET_COUNT = 8
 
+# JSON may carry a lone surrogate ("\ud800"); Python keeps it in the str, and every
+# UTF-8 encode downstream — writing the source to disk, the callback body — raised
+# UnicodeEncodeError: a 500 on /run and an ERROR callback (audit R2-098). It has no
+# UTF-8 spelling, so it becomes U+FFFD at the boundary and the program is compiled
+# and graded on its own merits.
+_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def _replace_lone_surrogates(value: Any) -> Any:
+    """Strip lone surrogates from every string in `value`, recursively.
+
+    Before, not after: pydantic's own `str` validation rejects a lone surrogate
+    ("unable to parse raw data as a unicode string"), so a later validator never
+    runs. Anything that is not a string or a container is passed through for the
+    normal type error.
+
+    Recursive because the surrogate does not have to be in `code`: a question's
+    `stdin` or `expected` reaches `tc.stdin.encode()` in the runner just the same,
+    where it is an ERROR callback rather than a grade.
+    """
+    if isinstance(value, str):
+        return _LONE_SURROGATE.sub("�", value)
+    if isinstance(value, dict):
+        return {k: _replace_lone_surrogates(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_replace_lone_surrogates(v) for v in value]
+    return value
+
+
+_Text = Annotated[str, BeforeValidator(_replace_lone_surrogates)]
+_Payload = Annotated[dict, BeforeValidator(_replace_lone_surrogates)]
+
 
 class AssessmentRequest(BaseModel):
-    question: dict = Field(
+    question: _Payload = Field(
         description="The full question the candidate answered (same shape as a "
         "question JSON: title, prompt, constraints, test_cases, example, ...)."
     )
-    code: str = Field(
+    code: _Text = Field(
         min_length=1,
         max_length=_MAX_CODE_CHARS,
         description="The candidate's submitted source code.",
@@ -293,9 +327,9 @@ class AssessmentRequest(BaseModel):
 
 
 class RunRequest(BaseModel):
-    code: str = Field(min_length=1, max_length=_MAX_CODE_CHARS, description="Source to execute.")
+    code: _Text = Field(min_length=1, max_length=_MAX_CODE_CHARS, description="Source to execute.")
     language: str = Field(description=f"One of {sorted(LANGUAGES)}.")
-    stdin: str = Field(
+    stdin: _Text = Field(
         default="",
         max_length=_MAX_STDIN_CHARS,
         description="Input fed to the program on stdin.",
@@ -306,8 +340,10 @@ class RunRequest(BaseModel):
 
 
 class RunTestsRequest(BaseModel):
-    question: dict = Field(description="The full question (same shape as POST /assessments).")
-    code: str = Field(min_length=1, max_length=_MAX_CODE_CHARS, description="Source to execute.")
+    question: _Payload = Field(
+        description="The full question (same shape as POST /assessments)."
+    )
+    code: _Text = Field(min_length=1, max_length=_MAX_CODE_CHARS, description="Source to execute.")
     language: str = Field(description=f"One of {sorted(LANGUAGES)}.")
 
 
@@ -338,15 +374,15 @@ class DraftSetRequest(DraftRequest):
 
 
 class ReportRequest(BaseModel):
-    result: dict = Field(
+    result: _Payload = Field(
         description="The serialized assessment result (a `result_to_dict` payload, "
         "as delivered on the grade callback and stored by the platform)."
     )
-    question: dict = Field(
+    question: _Payload = Field(
         description="The full question the candidate answered (same shape as POST "
         "/assessments) — the serialized result omits everything but the id/title."
     )
-    code: str = Field(
+    code: _Text = Field(
         min_length=1,
         max_length=_MAX_CODE_CHARS,
         description="The candidate's submitted source, rendered verbatim in the report.",
@@ -357,6 +393,15 @@ class ReportRequest(BaseModel):
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/toolchains")
+def toolchains() -> dict:
+    """The toolchain each language is graded with (audit R2-105): the pin in
+    assessment_agent/toolchains.txt, which CI diffs against the built image, so it
+    is what will actually compile the candidate's code. Unauthenticated like
+    /health — the platform shows it on the start screen, before any token is used."""
+    return {"toolchains": pinned_toolchains()}
 
 
 @app.get("/metrics", dependencies=[Depends(_require_token)], response_class=PlainTextResponse)

@@ -11,6 +11,7 @@ verdict.
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass, field
 
@@ -120,6 +121,13 @@ def _format_execution_summary(execution: ExecutionReport) -> str:
     return "\n".join(lines)
 
 
+def _meets(pct: float, threshold_pct: float) -> bool:
+    """`pct >= threshold_pct`, tolerant of the float noise in `threshold * 100`:
+    0.55 * 100 is 55.00000000000001, and a score of exactly 55% must pass (audit
+    R2-097 — the reason line already printed "55% ... threshold 55%")."""
+    return pct >= threshold_pct or math.isclose(pct, threshold_pct, rel_tol=0.0, abs_tol=1e-6)
+
+
 def assess(
     source: str,
     language: str,
@@ -165,7 +173,7 @@ def assess(
         if tle:
             notes.append(f"too slow (TLE) on {', '.join(tle)}")
         note = f" ({'; '.join(notes)})" if notes else ""
-        verdict = PASS if pct >= threshold_pct else FAIL
+        verdict = PASS if _meets(pct, threshold_pct) else FAIL
         reason = (
             f"Scored {pct:.0f}% ({earned:g}/{total:g} points), "
             f"threshold {threshold_pct:.0f}%{note}. "

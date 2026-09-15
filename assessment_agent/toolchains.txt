@@ -1,0 +1,12 @@
+# The toolchain each language is graded with — see toolchains.py. One line per
+# language: <language> <tool> <version>. Served on GET /toolchains and diffed
+# against the built image by scripts/lang-smoke.sh (CI's sandbox job): a
+# Dockerfile change that moves a version updates this file in the same commit.
+c gcc 14.2.0
+cpp g++ 14.2.0
+go go 1.24.4
+java javac 21.0.12.1
+javascript node 20.19.2
+python python3 3.13.5
+ruby ruby 3.3.8
+rust rustc 1.85.1

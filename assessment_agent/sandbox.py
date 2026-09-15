@@ -65,6 +65,12 @@ _warned_unsandboxed = False
 # the only PATH argv[0] may be resolved against — see `_nsjail_wrap`.
 _JAIL_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
+# The locale every child runs under, jailed or not (audit R2-093). The image sets
+# none, and with LANG unset the JVM picks file.encoding=ANSI_X3.4-1968 and Ruby
+# US-ASCII: a correct answer containing "café" printed as "caf?" and was marked
+# wrong. C.UTF-8 is built into glibc, so it exists without a locales package.
+CHILD_LOCALE = "C.UTF-8"
+
 # The grader's own install root (/app in the image): its questions.py carries the
 # built-in answer keys, so the child must not be able to read it.
 _GRADER_ROOT = Path(__file__).resolve().parent.parent
@@ -218,12 +224,15 @@ def _nsjail_wrap(
         str(workdir),
         # nsjail clears the environment by default — a feature here, since it keeps
         # host secrets (e.g. ANTHROPIC_API_KEY) out of untrusted code. But that
-        # leaves no PATH to resolve a bare `python3`/`node`/…, and no writable HOME
-        # for toolchains that cache there, so inject just those two.
+        # leaves no PATH to resolve a bare `python3`/`node`/…, no writable HOME for
+        # toolchains that cache there, and no locale (see CHILD_LOCALE), so inject
+        # just those three.
         "--env",
         f"PATH={_JAIL_PATH}",
         "--env",
         f"HOME={workdir}",
+        "--env",
+        f"LANG={CHILD_LOCALE}",
         "--time_limit",
         "0",  # runner enforces the timeout + killpg; don't double-govern
         "--rlimit_as",
@@ -303,6 +312,29 @@ def is_active() -> bool:
     if _BACKEND == "auto":
         return _nsjail_available()
     return False  # "none" or unknown
+
+
+def jail_path() -> str | None:
+    """The PATH a jailed child resolves commands against; None in passthrough,
+    where the child inherits the worker's own PATH."""
+    return _JAIL_PATH if is_active() else None
+
+
+def child_env() -> dict[str, str] | None:
+    """Environment for a child in passthrough: the worker's, with the locale forced
+    to CHILD_LOCALE. None under nsjail, which clears the environment itself and sets
+    exactly PATH, HOME and LANG (see `_nsjail_wrap`).
+
+    LC_ALL, not just LANG: LC_ALL overrides LANG for every category, so a worker
+    started with LC_ALL=C would put the child back on US-ASCII and R2-093 with it.
+    LC_CTYPE is dropped for the same reason — it outranks LANG too.
+    """
+    if is_active():
+        return None
+    env = {k: v for k, v in os.environ.items() if k != "LC_CTYPE"}
+    env["LANG"] = CHILD_LOCALE
+    env["LC_ALL"] = CHILD_LOCALE
+    return env
 
 
 def wrap(
